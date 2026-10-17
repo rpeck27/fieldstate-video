@@ -1,0 +1,24 @@
+{
+  "name": "fieldstate-video",
+  "private": true,
+  "type": "module",
+  "description": "Renders the weekly state video (The week ahead in <state>) from a Fieldstate script. Staged in sie-engine at scripts/video; runs in the public repo rpeck27/fieldstate-video.",
+  "scripts": {
+    "render": "node render.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@remotion/cli": "4.0.531",
+    "@remotion/google-fonts": "4.0.531",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "remotion": "4.0.531"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.2",
+    "typescript": "5.9.2"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

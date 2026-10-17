@@ -1,0 +1,67 @@
+# Render weekly video: "The week ahead in <state>".
+#
+# This file lives in sie-engine at scripts/video/.github/workflows/ and is
+# copied, with the rest of scripts/video, to the root of the PUBLIC repo
+# rpeck27/fieldstate-video. GitHub runs it only there: standard runners are
+# free for public repositories, so this costs no Actions minutes. GitHub
+# ignores a .github folder that is not at a repository's root, so it never
+# runs in sie-engine.
+#
+# Started by the Fieldstate conductor after the Friday-night run
+# (workflow_dispatch with render_id), or by hand: Actions → Render weekly
+# video → Run workflow, boxes empty (it picks up the newest waiting render).
+#
+# Identity: the job asks GitHub for an OIDC token (audience
+# "fieldstate-video"). The conductor accepts it only from this file, on main,
+# in this repository, for a workflow_dispatch run. No Cloudflare credential
+# lives here; the job uploads through the conductor. The only secret is
+# ELEVENLABS_API_KEY.
+name: Render weekly video
+
+on:
+  workflow_dispatch:
+    inputs:
+      render_id:
+        description: "Set by the conductor. Leave empty to render the newest waiting script."
+        type: string
+        default: ""
+      state:
+        description: "Informational (the script says which state)."
+        type: string
+        default: ""
+      week_of:
+        description: "Informational (the script says which week)."
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: render-weekly-video
+  cancel-in-progress: false
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      # The conductor's origin. Fixed here (not an input) so a run can never be
+      # pointed at another host with this job's identity token.
+      CONDUCTOR_URL: ${{ vars.CONDUCTOR_URL || 'https://fieldstate-shadow-conductor.rpeck27.workers.dev' }}
+      RENDER_ID: ${{ inputs.render_id }}
+      ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
+      ELEVENLABS_VOICE_ID: ${{ vars.ELEVENLABS_VOICE_ID }}
+      ELEVENLABS_MODEL_ID: ${{ vars.ELEVENLABS_MODEL_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npm test
+      - run: npx remotion browser ensure
+      - name: Render and upload
+        run: node render.mjs
