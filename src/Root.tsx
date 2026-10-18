@@ -3,18 +3,43 @@ import { Composition } from "remotion";
 import { WeeklyVideo, type VideoProps } from "./WeeklyVideo";
 
 const SAMPLE: VideoProps = {
-  script: { title: "The week ahead in North Carolina · Oct 19", state: "NC", state_name: "North Carolina", week_of: "2026-10-19" },
+  script: {
+    title: "This week in North Carolina · Oct 19",
+    state: "NC",
+    state_name: "North Carolina",
+    week_of: "2026-10-19",
+  },
   fps: 30,
-  totalFrames: 90,
-  durationS: 3,
+  totalFrames: 150,
+  durationS: 5,
   scenes: [
     {
-      id: "intro",
+      id: "open",
       kind: "title",
-      voice: "This is Fieldstate.",
-      screen: { title: "The week ahead in North Carolina · Oct 19", week_label: "Week of Oct 19", state_name: "North Carolina" },
+      voice: "This week in North Carolina.",
+      screen: {
+        title: "This week in North Carolina · Oct 19",
+        state_name: "North Carolina",
+        week_label: "Week of Oct 19",
+        kicker: "This week in",
+      },
       from: 0,
       durationInFrames: 90,
+      audio: null,
+      audioFrom: 9,
+    },
+    {
+      id: "story",
+      kind: "story",
+      voice: "Data centers are on local agendas.",
+      screen: {
+        kicker: "This week",
+        headline: "Data centers are on local agendas",
+        counties: ["Pitt", "Cumberland"],
+        figure: { value: 2, label: "places", format: "int" },
+      },
+      from: 90,
+      durationInFrames: 60,
       audio: null,
       audioFrom: 9,
     },
@@ -29,7 +54,7 @@ export const Root: React.FC = () => (
     width={1920}
     height={1080}
     fps={30}
-    durationInFrames={90}
+    durationInFrames={150}
     defaultProps={SAMPLE}
     calculateMetadata={({ props }) => ({
       durationInFrames: Math.max(1, props.totalFrames),

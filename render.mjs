@@ -13,7 +13,7 @@
 //   ELEVENLABS_MODEL_ID  optional repository variable
 // Local runs: SCRIPT_FILE=path NO_VOICE=1 NO_UPLOAD=1 node render.mjs
 import { spawn } from "node:child_process";
-import { mkdir, rm, stat, writeFile, readFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { cpus } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -21,7 +21,15 @@ import { fileURLToPath } from "node:url";
 import { estimatedAlignment, toVtt } from "./lib/captions.mjs";
 import { fetchScript, reportDone, reportFailed, uploadFile } from "./lib/conductor.mjs";
 import { buildTimeline } from "./lib/timeline.mjs";
-import { DEFAULT_MODEL, DEFAULT_VOICE, synthesize } from "./lib/voice.mjs";
+import {
+  DEFAULT_MODEL,
+  LOUDNORM,
+  VOICE_CANDIDATES,
+  defaultCandidate,
+  ensurePronunciationDictionary,
+  resolveVoiceByName,
+  synthesize,
+} from "./lib/voice.mjs";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const OUT = path.join(ROOT, "out");
@@ -41,6 +49,17 @@ function run(cmd, args) {
     const child = spawn(cmd, args, { cwd: ROOT, stdio: "inherit" });
     child.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`${cmd} ${args[0]} exited ${code}`))));
     child.on("error", reject);
+  });
+}
+
+/** Seconds of audio in a file (ffprobe), or 0 when it cannot tell. */
+function probeSeconds(file) {
+  return new Promise((resolve) => {
+    let out = "";
+    const child = spawn("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", file]);
+    child.stdout.on("data", (d) => (out += d));
+    child.on("exit", () => resolve(Number.parseFloat(out) || 0));
+    child.on("error", () => resolve(0));
   });
 }
 
@@ -64,9 +83,61 @@ async function main() {
 
   // 2. voice
   step = "voice";
-  const voiceId = env.ELEVENLABS_VOICE_ID || DEFAULT_VOICE;
-  const modelId = env.ELEVENLABS_MODEL_ID || DEFAULT_MODEL;
+  const candidate = defaultCandidate();
+  const modelId = env.ELEVENLABS_MODEL_ID || candidate.modelId || DEFAULT_MODEL;
   const noVoice = env.NO_VOICE === "1";
+  let voiceId = env.ELEVENLABS_VOICE_ID || candidate.voiceId || "";
+  let locators;
+  if (!noVoice) {
+    if (!voiceId) {
+      const found = await resolveVoiceByName({ name: candidate.name, apiKey: env.ELEVENLABS_API_KEY });
+      if (!found?.voiceId) {
+        throw new Error(`voice "${candidate.name}" was not found (${(found?.reasons || []).join("; ")}); set ELEVENLABS_VOICE_ID`);
+      }
+      voiceId = found.voiceId;
+      log(`voice ${found.name} on ${modelId}`);
+    } else {
+      log(`voice ${env.ELEVENLABS_VOICE_ID ? "id from the environment" : candidate.name} on ${modelId}, settings ${JSON.stringify(candidate.settings)}`);
+    }
+    if (/^eleven_v[34]/.test(modelId)) {
+      log("pronunciation: inline IPA for NC place names (eleven_v3/v4)");
+    } else {
+      try {
+        locators = await ensurePronunciationDictionary({ apiKey: env.ELEVENLABS_API_KEY });
+        log(locators ? "pronunciation dictionary ready" : "pronunciation dictionary not created");
+      } catch (err) {
+        log(`pronunciation dictionary skipped: ${err.message}`);
+      }
+    }
+  }
+  // Voice samples for Russell (Oct 17): the first two lines of this script
+  // in each candidate voice, posted with the review links. This render uses
+  // the default (or ELEVENLABS_VOICE) whatever the samples say; a pick
+  // applies from the next render. VOICE_SAMPLES=0 skips them.
+  const samples = [];
+  let sampleChars = 0;
+  if (!noVoice && env.VOICE_SAMPLES !== "0") {
+    const text = script.scenes.slice(0, 2).map((s) => s.voice).join(" ").slice(0, 420);
+    for (const c of VOICE_CANDIDATES) {
+      try {
+        const out = await synthesize({
+          text, apiKey: env.ELEVENLABS_API_KEY, voiceId: c.voiceId, modelId: c.modelId,
+          voiceSettings: c.settings, retries: 1,
+        });
+        const raw = path.join(OUT, `voice-${c.key}.raw.mp3`);
+        const mp3 = path.join(OUT, `voice-${c.key}.mp3`);
+        await writeFile(raw, out.audio);
+        await run("ffmpeg", ["-y", "-loglevel", "error", "-i", raw, "-af", LOUDNORM, "-ar", "44100", "-b:a", "128k", mp3]);
+        await rm(raw, { force: true });
+        samples.push(`voice-${c.key}.mp3`);
+        sampleChars += text.length;
+      } catch (err) {
+        log(`voice sample ${c.name} skipped: ${err.message}`);
+      }
+    }
+    log(`voice samples ${samples.length}/${VOICE_CANDIDATES.length}, ${sampleChars} characters`);
+  }
+
   const voiced = [];
   let chars = 0;
   for (let i = 0; i < script.scenes.length; i++) {
@@ -82,13 +153,19 @@ async function main() {
       apiKey: env.ELEVENLABS_API_KEY,
       voiceId,
       modelId,
+      voiceSettings: candidate.settings,
+      pronunciationDictionaryLocators: locators || undefined,
     });
     const name = `audio/${String(i).padStart(2, "0")}.mp3`;
-    await writeFile(path.join(ROOT, "public", name), out.audio);
-    voiced.push({ id: scene.id, audio: name, alignment: out.alignment });
+    const file = path.join(ROOT, "public", name);
+    await writeFile(file, out.audio);
+    const normalized = `${file}.norm.mp3`;
+    await run("ffmpeg", ["-y", "-i", file, "-af", LOUDNORM, "-ar", "44100", "-b:a", "128k", normalized]);
+    await rename(normalized, file);
+    voiced.push({ id: scene.id, audio: name, alignment: out.alignment, audioSeconds: await probeSeconds(file) });
     chars += scene.voice.length;
   }
-  log(`voice ${noVoice ? "skipped (NO_VOICE)" : `${chars} characters, model ${modelId}`}`);
+  log(`voice ${noVoice ? "skipped (NO_VOICE)" : `${chars} characters, model ${modelId}, ${LOUDNORM}`}`);
 
   // 3. render
   step = "render";
@@ -110,6 +187,27 @@ async function main() {
     "remotion", "still", "src/index.ts", "WeeklyVideo", path.join(OUT, "poster.jpg"),
     `--props=${propsFile}`, `--frame=${posterFrame}`, "--image-format=jpeg", "--jpeg-quality=85", ...extra,
   ]);
+  // Three stills for the approval message: opening map, a case card, close.
+  const stills = [];
+  const at = (sc, s) => sc.from + Math.min(sc.durationInFrames - 1, Math.round(timeline.fps * s));
+  const openSc = timeline.scenes[0];
+  const cardSc = timeline.scenes.find((s) => s.kind === "decisions" || s.kind === "agenda") || timeline.scenes[Math.min(1, timeline.scenes.length - 1)];
+  const closeSc = timeline.scenes[timeline.scenes.length - 1];
+  for (const [name, frame] of [
+    ["still-open.jpg", at(openSc, 3.2)],
+    ["still-card.jpg", cardSc.from + Math.floor(cardSc.durationInFrames * 0.8)],
+    ["still-close.jpg", at(closeSc, 3.0)],
+  ]) {
+    try {
+      await run("npx", [
+        "remotion", "still", "src/index.ts", "WeeklyVideo", path.join(OUT, name),
+        `--props=${propsFile}`, `--frame=${frame}`, "--image-format=jpeg", "--jpeg-quality=80", "--scale=0.5", ...extra,
+      ]);
+      stills.push(name);
+    } catch (err) {
+      log(`still ${name} skipped: ${err.message}`);
+    }
+  }
   const mp4Bytes = (await stat(path.join(OUT, "video.mp4"))).size;
   log(`render ${timeline.durationS.toFixed(1)}s video, ${(mp4Bytes / 1e6).toFixed(1)} MB, concurrency ${concurrency}`);
 
@@ -122,11 +220,20 @@ async function main() {
   await uploadFile(base, renderId, "video.mp4", path.join(OUT, "video.mp4"), "video/mp4");
   await uploadFile(base, renderId, "poster.jpg", path.join(OUT, "poster.jpg"), "image/jpeg");
   await uploadFile(base, renderId, "captions.vtt", path.join(OUT, "captions.vtt"), "text/vtt");
+  // Review-only files: best effort, never fail the render over them.
+  for (const [name, type] of [...stills.map((n) => [n, "image/jpeg"]), ...samples.map((n) => [n, "audio/mpeg"])]) {
+    try {
+      await uploadFile(base, renderId, name, path.join(OUT, name), type);
+    } catch (err) {
+      log(`upload ${name} skipped: ${err.message}`);
+    }
+  }
   step = "done";
   await reportDone(base, renderId, {
     duration_s: Number(timeline.durationS.toFixed(2)),
-    voice_chars: chars,
+    voice_chars: chars + sampleChars,
     voice_model: modelId,
+    voice_name: env.ELEVENLABS_VOICE_ID ? "voice id from the environment" : candidate.name,
     render_seconds: Math.round((Date.now() - t0) / 1000),
   });
   log("done: review links are in #ops");

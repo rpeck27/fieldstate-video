@@ -2,7 +2,7 @@
   "name": "fieldstate-video",
   "private": true,
   "type": "module",
-  "description": "Renders the weekly state video (The week ahead in <state>) from a Fieldstate script. Staged in sie-engine at scripts/video; runs in the public repo rpeck27/fieldstate-video.",
+  "description": "Renders the weekly state video (This week in <state>) from a Fieldstate script. Staged in sie-engine at scripts/video; runs in the public repo rpeck27/fieldstate-video.",
   "scripts": {
     "render": "node render.mjs",
     "test": "node --test test/*.test.mjs"

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { cuesFromWords, estimatedAlignment, toVtt, wordsFromAlignment } from "../lib/captions.mjs";
+import { cuesFromCaption, cuesFromWords, estimatedAlignment, toVtt, wordsFromAlignment } from "../lib/captions.mjs";
 import { buildTimeline } from "../lib/timeline.mjs";
 
 function align(text, perChar = 0.05) {
@@ -33,6 +33,24 @@ test("VTT is well formed", () => {
   assert.equal(vtt, "WEBVTT\n\n1\n00:00:00.000 --> 00:00:01.234\nHello.\n\n2\n00:01:01.500 --> 00:01:02.000\nBye.\n");
 });
 
+test("a cap line keeps digits even when the voice spells them", () => {
+  const script = {
+    scenes: [{ id: "a", kind: "agenda", voice: "October nineteenth.", cap: "October 19." }],
+  };
+  const voiced = [{ id: "a", audio: null, alignment: estimatedAlignment(script.scenes[0].voice, 2) }];
+  const t = buildTimeline(script, voiced);
+  assert.equal(t.cues.map((c) => c.text).join(" "), "October 19.");
+  assert.ok(!t.cues.some((c) => c.text.includes("nineteenth")));
+});
+
+test("cuesFromCaption breaks long lines and covers the voice window", () => {
+  const cues = cuesFromCaption("On Monday, October 19, the board meets.", 1, 5, { maxChars: 24 });
+  assert.ok(cues.length > 1);
+  assert.equal(cues.map((c) => c.text).join(" "), "On Monday, October 19, the board meets.");
+  assert.ok(Math.abs(cues[0].start - 1) < 1e-9);
+  assert.ok(Math.abs(cues[cues.length - 1].end - 5) < 1e-9);
+});
+
 test("timeline: scenes follow each other; captions line up with the voice", () => {
   const script = {
     scenes: [
@@ -50,4 +68,12 @@ test("timeline: scenes follow each other; captions line up with the voice", () =
   const second = t.cues.find((c) => c.text.startsWith("That's"));
   assert.ok(second.start >= t.scenes[1].from / 30);
   assert.throws(() => buildTimeline(script, voiced.slice().reverse()), /mismatch/);
+});
+
+test("a scene is never shorter than its measured audio file", () => {
+  const script = { scenes: [{ id: "a", kind: "agenda", voice: "x", cap: "x" }] };
+  const alignment = { characters: ["x"], character_start_times_seconds: [0], character_end_times_seconds: [2] };
+  const short = buildTimeline(script, [{ id: "a", audio: null, alignment }]);
+  const long = buildTimeline(script, [{ id: "a", audio: null, alignment, audioSeconds: 3.5 }]);
+  assert.equal(long.scenes[0].durationInFrames - short.scenes[0].durationInFrames, 45);
 });
