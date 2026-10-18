@@ -243,7 +243,7 @@ main().catch(async (err) => {
   console.error(`failed at ${step}: ${err.message}`);
   if (base && env.NO_UPLOAD !== "1" && !env.SCRIPT_FILE) {
     try {
-      await reportFailed(base, renderId, step);
+      await reportFailed(base, renderId, step, undefined, err && err.cap === "elevenlabs" ? { cap: "elevenlabs" } : undefined);
     } catch (e) {
       console.error(`could not report the failure: ${e.message}`);
     }
