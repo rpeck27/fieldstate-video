@@ -64,5 +64,12 @@ jobs:
       - run: npm ci --no-audit --no-fund
       - run: npm test
       - run: npx remotion browser ensure
+      # render.mjs normalizes the voice with ffmpeg (loudnorm); the runner image
+      # does not ship it.
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends ffmpeg
+          ffmpeg -version | head -1
       - name: Render and upload
         run: node render.mjs
