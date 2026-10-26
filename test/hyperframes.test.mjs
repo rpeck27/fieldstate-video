@@ -94,6 +94,20 @@ test("map box: a wide state keeps the pilot's width; a tall one is fitted", () =
   assert.ok(tx.width < 1080 && tx.left > 0);
 });
 
+test("map slots: a tall state is centred in the full slot width; a wide state keeps the pilot's markup", () => {
+  const tx = fixture("TX", "Texas", ["48113", "48167"]);
+  const { html: txHtml } = compositionHtml({ script: tx, timeline: timelineFor(tx), transcript: null });
+  const slots = [...txHtml.matchAll(/<div class="map-slot" style="width:(\d+(?:\.\d+)?)px;[^"]*justify-content:center"><div class="map" style="([^"]*)"/g)];
+  // Every map in a Texas video is height-capped: title, decisions, story, agenda, legislature, outro.
+  assert.equal(slots.length, (txHtml.match(/class="map"/g) || []).length);
+  assert.deepEqual(new Set(slots.map((m) => Number(m[1]))), new Set([1080, 860, 980, 700, 900, 1500]));
+  for (const m of slots) assert.doesNotMatch(m[2], /margin/);
+  const nc = fixture();
+  const { html: ncHtml } = compositionHtml({ script: nc, timeline: timelineFor(nc), transcript: null });
+  assert.doesNotMatch(ncHtml, /map-slot/);
+  assert.doesNotMatch(ncHtml, /class="map" style="[^"]*margin/);
+});
+
 test("composition: no URL of any kind, so nothing can be fetched at render time", () => {
   for (const [st, name, fips] of [["NC", "North Carolina", ["37183", "37051"]], ["TX", "Texas", ["48113", "48167"]]]) {
     const script = fixture(st, name, fips);
