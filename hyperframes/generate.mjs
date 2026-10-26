@@ -206,13 +206,18 @@ function stateMapSvg(ids, map, opts) {
       );
     })
     .join("");
-  return (
-    `<div class="map" style="width:${width}px;height:${height.toFixed(1)}px${box.left ? `;margin-left:${box.left.toFixed(1)}px` : ""}">` +
+  const mapDiv =
+    `<div class="map" style="width:${width}px;height:${height.toFixed(1)}px">` +
     `<svg viewBox="${map.viewBox}" width="${width}" height="${height.toFixed(1)}" data-draw-at="${drawAt}">${paths}</svg>` +
     dotEls +
     pulseEls +
-    `</div>`
-  );
+    `</div>`;
+  // A wide state fills its slot: the markup is exactly the pilot's. A
+  // height-capped (tall) state sits centred in a slot that keeps the full
+  // slot width, so it lines up the same whether its scene anchors the map
+  // left, right (title, legislature) or in a centring flex box (outro).
+  if (!box.left) return mapDiv;
+  return `<div class="map-slot" style="width:${box.boxWidth}px;height:${height.toFixed(1)}px;display:flex;justify-content:center">${mapDiv}</div>`;
 }
 
 /** Big figure that counts up ("4.25 acres", "180 townhomes", "5–2"). */
