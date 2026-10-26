@@ -8,11 +8,18 @@
     "test": "node --test test/*.test.mjs"
   },
   "dependencies": {
+    "@fontsource/geist": "5.3.0",
+    "@fontsource/newsreader": "5.3.0",
     "@remotion/cli": "4.0.531",
     "@remotion/google-fonts": "4.0.531",
+    "d3-geo": "3.1.1",
+    "gsap": "3.14.2",
+    "hyperframes": "0.8.205",
     "react": "19.2.8",
     "react-dom": "19.2.8",
-    "remotion": "4.0.531"
+    "remotion": "4.0.531",
+    "topojson-client": "3.1.0",
+    "us-atlas": "3.0.1"
   },
   "devDependencies": {
     "@types/react": "19.2.2",

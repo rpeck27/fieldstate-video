@@ -157,14 +157,88 @@ Settings → Variables and Secrets → **Add**, type **Secret** each time):
 That's all. The next Friday-night run does the rest, and #ops gets the links
 on Saturday morning.
 
+## Renderer: Remotion, or HyperFrames (pilot, engine brief Oct 26)
+
+The repository variable **`RENDERER`** picks the renderer. It is unset, so the
+render uses **Remotion**, exactly as before. With `RENDERER` = `hyperframes`, the
+job renders with [HyperFrames](https://github.com/heygen-com/hyperframes)
+(Apache-2.0, run locally; no HeyGen account) and, if anything in that path
+fails, renders the same voiced timeline with Remotion **in the same run**. It
+uses the same voice files, uploads and OIDC identity, so the week still gets
+a video. The Actions log says which renderer ran and why a fallback happened.
+The `done` call also carries `renderer` and `renderer_fallback`; today's
+conductor ignores both.
+
+Nothing else changes: `render.yml` (name, inputs, permissions), the conductor
+endpoints, the upload names, the voice, the captions and the approval flow.
+
+The HyperFrames path (`lib/hyperframes.mjs`):
+
+1. **Generate.** `hyperframes/generate.mjs` turns the script and the voiced
+   timeline (`lib/timeline.mjs`: each scene lasts its voice clip plus a lead
+   and tail) into `out/hf/index.html` plus `assets/`. The composition is one
+   template, a translation of `src/WeeklyVideo.tsx` with the same tokens,
+   Newsreader + Geist, motion and layout. Every element is written out, with
+   its timing as data attributes, and `hyperframes/runtime.js` turns those
+   into one paused GSAP timeline. Everything is baked in: the county map for
+   the script's state comes from us-atlas at generation time
+   (`hyperframes/geo.mjs`; for North Carolina it is byte-identical to
+   `src/nc-counties.json`). Fonts and GSAP come from pinned npm packages.
+   Photos and voice clips are copied in. Each voice clip is an
+   `<audio data-start data-duration>` in its scene.
+2. **Captions.** Our own `captions.vtt`, built from ElevenLabs' timestamps
+   (`lib/captions.mjs`), the same file that ships as `captions_url`, is
+   imported with `hyperframes transcribe captions.vtt`. That is a format
+   import; no speech model runs. The captions are then burned in as one pill
+   per cue, in the pilot's caption style.
+3. **Lint.** `hyperframes lint`. Any error stops this path, and Remotion
+   renders instead. Warnings are logged; today they are only "split into
+   sub-compositions" hints.
+4. **Image.** The image is `hyperframes/Dockerfile.render`, the CLI's own
+   `--docker` image with Chrome pinned and telemetry off. It is built once per
+   runner (about 2 minutes) and tagged as `hyperframes render --docker`
+   expects.
+5. **Render.** The container is the same one `hyperframes render --docker`
+   runs (1080p30, quality `looks`, software GL, `--strict`), plus
+   `--network none`, so a composition that tries to fetch anything fails
+   instead. The voice key and the OIDC request token are never passed to the
+   CLI or the container.
+6. **Frames.** The poster and the three review stills are cut from the
+   finished MP4 at the moments the Remotion path uses.
+
+**Guardrails** (brief §4): no HeyGen account, no `hyperframes cloud`/`lambda`/
+`cloudrun`, never `hyperframes publish` (it would put the project on a
+public site), no `auth`. Template changes after this pilot are surface-thread
+work.
+
+**Upgrading HyperFrames** is deliberate. Bump the exact version in
+`package.json` (`npm install --save-exact hyperframes@X`), copy the new
+`node_modules/hyperframes/dist/docker/Dockerfile.render` over
+`hyperframes/Dockerfile.render`, keeping the header and the three marked
+changes. Set `CHROME_VERSION` to the CLI's `CHROME_VERSION`. Then re-render a
+past week with both versions and compare. `npm test` fails if the pin and the
+Dockerfile header disagree.
+
+**Switching.** To try HyperFrames, the engine thread sets the repository
+variable `RENDERER` to `hyperframes` (GitHub → fieldstate-video → Settings →
+Secrets and variables → Actions → Variables). To go back, it deletes the
+variable.
+
+Agent skills for HyperFrames are in `.claude/skills` and `.agents/skills`
+(`npx skills add heygen-com/hyperframes`; `skills-lock.json` records them).
+
 ## Running it elsewhere
 
 `SCRIPT_FILE=script.json NO_VOICE=1 NO_UPLOAD=1 node render.mjs` renders a
 script without a voice or an upload (`npx remotion browser ensure` first).
+Add `RENDERER=hyperframes` for the HyperFrames path (Docker running). The
+image builds on first use; `HF_WORKERS` overrides the capture workers
+(default: CPUs, at most 4).
 `ELEVENLABS_API_KEY=… node sample-voices.mjs` writes the three-voice sample
 under `out/voice-samples/`. Behind a TLS-inspecting proxy add
 `REMOTION_EXTRA_FLAGS=--ignore-certificate-errors`. `npm test` runs the
-caption, timeline, and voice-candidate tests.
+caption, timeline, voice-candidate and HyperFrames (generator, map, render
+plumbing) tests.
 
 The photo in `public/photos/cumberland.jpg` is the Cumberland County
 Courthouse by Gerry Dincher, licensed CC BY-SA 2.0

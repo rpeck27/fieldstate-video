@@ -2,7 +2,9 @@
 //
 //   1. script   fetch the script from the conductor (or SCRIPT_FILE locally)
 //   2. voice    one ElevenLabs call per scene, with character timings
-//   3. render   Remotion: MP4 (H.264), a poster frame (JPEG), captions (VTT)
+//   3. render   Remotion, or HyperFrames when RENDERER=hyperframes (falls back
+//               to Remotion on any failure): MP4 (H.264), poster (JPEG),
+//               captions (VTT)
 //   4. upload   the three files back through the conductor, then "done"
 //
 // Environment (the workflow sets these):
@@ -11,6 +13,8 @@
 //   ELEVENLABS_API_KEY   repository secret (never printed)
 //   ELEVENLABS_VOICE_ID  optional repository variable
 //   ELEVENLABS_MODEL_ID  optional repository variable
+//   RENDERER             optional repository variable: "hyperframes" or
+//                        "remotion" (the default)
 // Local runs: SCRIPT_FILE=path NO_VOICE=1 NO_UPLOAD=1 node render.mjs
 import { spawn } from "node:child_process";
 import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
@@ -38,6 +42,7 @@ const env = process.env;
 const base = env.CONDUCTOR_URL || "";
 let renderId = (env.RENDER_ID || "").trim();
 let step = "script";
+let currentScript = null;
 const t0 = Date.now();
 
 function log(line) {
@@ -63,6 +68,48 @@ function probeSeconds(file) {
   });
 }
 
+/** The Remotion render (the path every week used before the pilot). */
+async function renderRemotion(timeline) {
+  const props = { script: { ...currentScript, scenes: undefined }, ...timeline };
+  const propsFile = path.join(OUT, "props.json");
+  await writeFile(propsFile, JSON.stringify(props));
+  const concurrency = String(Math.max(1, cpus().length));
+  // Local debugging only (e.g. "--ignore-certificate-errors" behind a proxy).
+  const extra = (env.REMOTION_EXTRA_FLAGS || "").split(" ").filter(Boolean);
+  await run("npx", [
+    "remotion", "render", "src/index.ts", "WeeklyVideo", path.join(OUT, "video.mp4"),
+    `--props=${propsFile}`, "--codec=h264", "--crf=26", "--audio-bitrate=128k",
+    `--concurrency=${concurrency}`, "--log=info", ...extra,
+  ]);
+  const posterFrame = Math.min(timeline.scenes[0].durationInFrames - 1, Math.round(timeline.fps * 1.5));
+  await run("npx", [
+    "remotion", "still", "src/index.ts", "WeeklyVideo", path.join(OUT, "poster.jpg"),
+    `--props=${propsFile}`, `--frame=${posterFrame}`, "--image-format=jpeg", "--jpeg-quality=85", ...extra,
+  ]);
+  // Three stills for the approval message: opening map, a case card, close.
+  const stills = [];
+  const at = (sc, s) => sc.from + Math.min(sc.durationInFrames - 1, Math.round(timeline.fps * s));
+  const openSc = timeline.scenes[0];
+  const cardSc = timeline.scenes.find((s) => s.kind === "decisions" || s.kind === "agenda") || timeline.scenes[Math.min(1, timeline.scenes.length - 1)];
+  const closeSc = timeline.scenes[timeline.scenes.length - 1];
+  for (const [name, frame] of [
+    ["still-open.jpg", at(openSc, 3.2)],
+    ["still-card.jpg", cardSc.from + Math.floor(cardSc.durationInFrames * 0.8)],
+    ["still-close.jpg", at(closeSc, 3.0)],
+  ]) {
+    try {
+      await run("npx", [
+        "remotion", "still", "src/index.ts", "WeeklyVideo", path.join(OUT, name),
+        `--props=${propsFile}`, `--frame=${frame}`, "--image-format=jpeg", "--jpeg-quality=80", "--scale=0.5", ...extra,
+      ]);
+      stills.push(name);
+    } catch (err) {
+      log(`still ${name} skipped: ${err.message}`);
+    }
+  }
+  return stills;
+}
+
 async function main() {
   await rm(OUT, { recursive: true, force: true });
   await rm(AUDIO, { recursive: true, force: true });
@@ -79,6 +126,7 @@ async function main() {
     script = got.script;
   }
   if (!script?.scenes?.length) throw new Error("script has no scenes");
+  currentScript = script;
   log(`script ${script.state} week_of=${script.week_of} scenes=${script.scenes.length} render=${renderId || "local"}`);
 
   // 2. voice
@@ -170,46 +218,37 @@ async function main() {
   // 3. render
   step = "render";
   const timeline = buildTimeline(script, voiced);
-  const props = { script: { ...script, scenes: undefined }, ...timeline };
-  const propsFile = path.join(OUT, "props.json");
-  await writeFile(propsFile, JSON.stringify(props));
   await writeFile(path.join(OUT, "captions.vtt"), toVtt(timeline.cues));
-  const concurrency = String(Math.max(1, cpus().length));
-  // Local debugging only (e.g. "--ignore-certificate-errors" behind a proxy).
-  const extra = (env.REMOTION_EXTRA_FLAGS || "").split(" ").filter(Boolean);
-  await run("npx", [
-    "remotion", "render", "src/index.ts", "WeeklyVideo", path.join(OUT, "video.mp4"),
-    `--props=${propsFile}`, "--codec=h264", "--crf=26", "--audio-bitrate=128k",
-    `--concurrency=${concurrency}`, "--log=info", ...extra,
-  ]);
-  const posterFrame = Math.min(timeline.scenes[0].durationInFrames - 1, Math.round(timeline.fps * 1.5));
-  await run("npx", [
-    "remotion", "still", "src/index.ts", "WeeklyVideo", path.join(OUT, "poster.jpg"),
-    `--props=${propsFile}`, `--frame=${posterFrame}`, "--image-format=jpeg", "--jpeg-quality=85", ...extra,
-  ]);
-  // Three stills for the approval message: opening map, a case card, close.
-  const stills = [];
-  const at = (sc, s) => sc.from + Math.min(sc.durationInFrames - 1, Math.round(timeline.fps * s));
-  const openSc = timeline.scenes[0];
-  const cardSc = timeline.scenes.find((s) => s.kind === "decisions" || s.kind === "agenda") || timeline.scenes[Math.min(1, timeline.scenes.length - 1)];
-  const closeSc = timeline.scenes[timeline.scenes.length - 1];
-  for (const [name, frame] of [
-    ["still-open.jpg", at(openSc, 3.2)],
-    ["still-card.jpg", cardSc.from + Math.floor(cardSc.durationInFrames * 0.8)],
-    ["still-close.jpg", at(closeSc, 3.0)],
-  ]) {
+  // Renderer (HyperFrames pilot, engine brief Oct 26): the repository
+  // variable RENDERER picks it. Unset or "remotion" renders with Remotion as
+  // before. "hyperframes" tries HyperFrames first; any failure there (setup,
+  // captions, lint, image, render, frames, a timeout) falls back to Remotion
+  // in this same run, with the same voice, so the week still gets a video.
+  const wanted = (env.RENDERER || "remotion").trim().toLowerCase();
+  let renderer = "remotion";
+  let fallback = "";
+  let stills = [];
+  if (wanted === "hyperframes") {
     try {
-      await run("npx", [
-        "remotion", "still", "src/index.ts", "WeeklyVideo", path.join(OUT, name),
-        `--props=${propsFile}`, `--frame=${frame}`, "--image-format=jpeg", "--jpeg-quality=80", "--scale=0.5", ...extra,
-      ]);
-      stills.push(name);
+      // Loaded only here: nothing in the HyperFrames path can stop a
+      // Remotion render from starting.
+      const { renderWithHyperframes } = await import("./lib/hyperframes.mjs");
+      const hfOut = await renderWithHyperframes({
+        script, timeline, outDir: OUT, publicDir: path.join(ROOT, "public"), log,
+        workers: Number(env.HF_WORKERS) || Math.max(1, Math.min(4, cpus().length)),
+      });
+      renderer = "hyperframes";
+      stills = hfOut.stills;
     } catch (err) {
-      log(`still ${name} skipped: ${err.message}`);
+      fallback = `${err.step || "hyperframes"}: ${err.message}`.slice(0, 300);
+      log(`HyperFrames failed at ${err.step || "?"} (${err.message}); rendering with Remotion instead`);
     }
+  } else if (wanted !== "remotion") {
+    log(`RENDERER="${wanted}" is not hyperframes or remotion; rendering with Remotion`);
   }
+  if (renderer === "remotion") stills = await renderRemotion(timeline);
   const mp4Bytes = (await stat(path.join(OUT, "video.mp4"))).size;
-  log(`render ${timeline.durationS.toFixed(1)}s video, ${(mp4Bytes / 1e6).toFixed(1)} MB, concurrency ${concurrency}`);
+  log(`render ${renderer}${fallback ? " (fallback)" : ""}: ${timeline.durationS.toFixed(1)}s video, ${(mp4Bytes / 1e6).toFixed(1)} MB`);
 
   // 4. upload
   if (env.NO_UPLOAD === "1") {
@@ -235,6 +274,9 @@ async function main() {
     voice_model: modelId,
     voice_name: env.ELEVENLABS_VOICE_ID ? "voice id from the environment" : candidate.name,
     render_seconds: Math.round((Date.now() - t0) / 1000),
+    // Logged for the pilot; the conductor keeps only the fields it knows.
+    renderer,
+    renderer_fallback: fallback || undefined,
   });
   log("done: review links are in #ops");
 }
