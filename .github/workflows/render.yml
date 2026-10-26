@@ -55,6 +55,11 @@ jobs:
       ELEVENLABS_VOICE_ID: ${{ vars.ELEVENLABS_VOICE_ID }}
       ELEVENLABS_MODEL_ID: ${{ vars.ELEVENLABS_MODEL_ID }}
       ELEVENLABS_VOICE: ${{ vars.ELEVENLABS_VOICE }}
+      # HyperFrames pilot (engine brief Oct 26): unset or "remotion" renders
+      # with Remotion as before; "hyperframes" renders with HyperFrames in its
+      # pinned Docker image and falls back to Remotion in this same run on any
+      # failure (README "Renderer").
+      RENDERER: ${{ vars.RENDERER }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
