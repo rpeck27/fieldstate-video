@@ -60,6 +60,11 @@ jobs:
       # pinned Docker image and falls back to Remotion in this same run on any
       # failure (README "Renderer").
       RENDERER: ${{ vars.RENDERER }}
+      # Weekly video v3: unset or "v2" renders the v2
+      # script exactly as before; "v3" renders the lead story from the
+      # script's v3 block with HyperFrames and falls back to v2 in this same
+      # run on any failure (README "Template").
+      VIDEO_TEMPLATE: ${{ vars.VIDEO_TEMPLATE }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

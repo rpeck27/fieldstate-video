@@ -15,6 +15,9 @@
 //   ELEVENLABS_MODEL_ID  optional repository variable
 //   RENDERER             optional repository variable: "hyperframes" or
 //                        "remotion" (the default)
+//   VIDEO_TEMPLATE       optional repository variable: "v3" (the lead
+//                        story, HyperFrames, falls back to v2) or "v2" (the
+//                        default)
 // Local runs: SCRIPT_FILE=path NO_VOICE=1 NO_UPLOAD=1 node render.mjs
 import { spawn } from "node:child_process";
 import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
@@ -186,69 +189,127 @@ async function main() {
     log(`voice samples ${samples.length}/${VOICE_CANDIDATES.length}, ${sampleChars} characters`);
   }
 
-  const voiced = [];
-  let chars = 0;
-  for (let i = 0; i < script.scenes.length; i++) {
-    const scene = script.scenes[i];
-    if (noVoice) {
-      voiced.push({ id: scene.id, audio: null, alignment: estimatedAlignment(scene.voice, scene.voice.length / 15) });
-      continue;
+  // One ElevenLabs call per scene, with its neighbours as context. A scene
+  // with no voice (v3's segment card) is silent and gets no clip.
+  async function voiceScenes(scenes) {
+    const voiced = [];
+    let chars = 0;
+    for (let i = 0; i < scenes.length; i++) {
+      const scene = scenes[i];
+      if (!scene.voice) {
+        voiced.push({ id: scene.id, audio: null, alignment: null });
+        continue;
+      }
+      if (noVoice) {
+        voiced.push({ id: scene.id, audio: null, alignment: estimatedAlignment(scene.voice, scene.voice.length / 15) });
+        continue;
+      }
+      const out = await synthesize({
+        text: scene.voice,
+        previousText: scenes[i - 1]?.voice ?? "",
+        nextText: scenes[i + 1]?.voice ?? "",
+        apiKey: env.ELEVENLABS_API_KEY,
+        voiceId,
+        modelId,
+        voiceSettings: candidate.settings,
+        pronunciationDictionaryLocators: locators || undefined,
+      });
+      const name = `audio/${String(i).padStart(2, "0")}.mp3`;
+      const file = path.join(ROOT, "public", name);
+      await writeFile(file, out.audio);
+      const normalized = `${file}.norm.mp3`;
+      await run("ffmpeg", ["-y", "-i", file, "-af", LOUDNORM, "-ar", "44100", "-b:a", "128k", normalized]);
+      await rename(normalized, file);
+      voiced.push({ id: scene.id, audio: name, alignment: out.alignment, audioSeconds: await probeSeconds(file) });
+      chars += scene.voice.length;
     }
-    const out = await synthesize({
-      text: scene.voice,
-      previousText: script.scenes[i - 1]?.voice ?? "",
-      nextText: script.scenes[i + 1]?.voice ?? "",
-      apiKey: env.ELEVENLABS_API_KEY,
-      voiceId,
-      modelId,
-      voiceSettings: candidate.settings,
-      pronunciationDictionaryLocators: locators || undefined,
-    });
-    const name = `audio/${String(i).padStart(2, "0")}.mp3`;
-    const file = path.join(ROOT, "public", name);
-    await writeFile(file, out.audio);
-    const normalized = `${file}.norm.mp3`;
-    await run("ffmpeg", ["-y", "-i", file, "-af", LOUDNORM, "-ar", "44100", "-b:a", "128k", normalized]);
-    await rename(normalized, file);
-    voiced.push({ id: scene.id, audio: name, alignment: out.alignment, audioSeconds: await probeSeconds(file) });
-    chars += scene.voice.length;
+    log(`voice ${noVoice ? "skipped (NO_VOICE)" : `${chars} characters, model ${modelId}, ${LOUDNORM}`}`);
+    return { voiced, chars };
   }
-  log(`voice ${noVoice ? "skipped (NO_VOICE)" : `${chars} characters, model ${modelId}, ${LOUDNORM}`}`);
+  const hfWorkers = Number(env.HF_WORKERS) || Math.max(1, Math.min(4, cpus().length));
 
-  // 3. render
-  step = "render";
-  const timeline = buildTimeline(script, voiced);
-  await writeFile(path.join(OUT, "captions.vtt"), toVtt(timeline.cues));
-  // Renderer (HyperFrames pilot, engine brief Oct 26): the repository
-  // variable RENDERER picks it. Unset or "remotion" renders with Remotion as
-  // before. "hyperframes" tries HyperFrames first; any failure there (setup,
-  // captions, lint, image, render, frames, a timeout) falls back to Remotion
-  // in this same run, with the same voice, so the week still gets a video.
-  const wanted = (env.RENDERER || "remotion").trim().toLowerCase();
+  // Template (weekly video v3): the repository
+  // variable VIDEO_TEMPLATE picks it. Unset or "v2" renders the v2 script
+  // exactly as before. "v3" renders the lead story from the script's `v3`
+  // block with HyperFrames; if the block is missing, failed in the engine or
+  // has no lead, or any step of the v3 render fails, this same run renders
+  // v2 as before (VIDEO_TEMPLATE unset), so the week still gets its video.
+  const template = (env.VIDEO_TEMPLATE || "v2").trim().toLowerCase();
+  let templateUsed = "v2";
+  let templateFallback = "";
+  let v3Chars = 0;
+  let timeline;
+  let chars = 0;
   let renderer = "remotion";
   let fallback = "";
   let stills = [];
-  if (wanted === "hyperframes") {
+  if (template === "v3") {
     try {
-      // Loaded only here: nothing in the HyperFrames path can stop a
-      // Remotion render from starting.
+      // Loaded only here, like the HyperFrames path: nothing in v3 can stop
+      // the v2 render from starting.
+      const { v3RenderScript } = await import("./lib/v3.mjs");
+      const v3script = v3RenderScript(script, { log });
+      log(`template v3: ${v3script.scenes.map((s) => s.kind).join(", ")}`);
+      const v = await voiceScenes(v3script.scenes);
+      v3Chars = v.chars;
+      step = "render";
+      const v3timeline = buildTimeline(v3script, v.voiced);
+      await writeFile(path.join(OUT, "captions.vtt"), toVtt(v3timeline.cues));
       const { renderWithHyperframes } = await import("./lib/hyperframes.mjs");
       const hfOut = await renderWithHyperframes({
-        script, timeline, outDir: OUT, publicDir: path.join(ROOT, "public"), log,
-        workers: Number(env.HF_WORKERS) || Math.max(1, Math.min(4, cpus().length)),
+        script: v3script, timeline: v3timeline, outDir: OUT, publicDir: path.join(ROOT, "public"), log, workers: hfWorkers,
       });
+      timeline = v3timeline;
       renderer = "hyperframes";
       stills = hfOut.stills;
+      templateUsed = "v3";
     } catch (err) {
-      fallback = `${err.step || "hyperframes"}: ${err.message}`.slice(0, 300);
-      log(`HyperFrames failed at ${err.step || "?"} (${err.message}); rendering with Remotion instead`);
+      if (err && err.cap === "elevenlabs") throw err; // no voice left: v2 can't be voiced either
+      templateFallback = `${err.step || "v3"}: ${err.message}`.slice(0, 300);
+      log(`template v3 failed at ${err.step || "?"} (${err.message}); rendering v2 instead`);
+      step = "voice";
     }
-  } else if (wanted !== "remotion") {
-    log(`RENDERER="${wanted}" is not hyperframes or remotion; rendering with Remotion`);
+  } else if (template !== "v2") {
+    log(`VIDEO_TEMPLATE="${template}" is not v2 or v3; rendering v2`);
   }
-  if (renderer === "remotion") stills = await renderRemotion(timeline);
+
+  if (templateUsed === "v2") {
+    const v = await voiceScenes(script.scenes);
+    const voiced = v.voiced;
+    chars = v.chars;
+
+    // 3. render
+    step = "render";
+    timeline = buildTimeline(script, voiced);
+    await writeFile(path.join(OUT, "captions.vtt"), toVtt(timeline.cues));
+    // Renderer (HyperFrames pilot, engine brief Oct 26): the repository
+    // variable RENDERER picks it. Unset or "remotion" renders with Remotion as
+    // before. "hyperframes" tries HyperFrames first; any failure there (setup,
+    // captions, lint, image, render, frames, a timeout) falls back to Remotion
+    // in this same run, with the same voice, so the week still gets a video.
+    const wanted = (env.RENDERER || "remotion").trim().toLowerCase();
+    if (wanted === "hyperframes") {
+      try {
+        // Loaded only here: nothing in the HyperFrames path can stop a
+        // Remotion render from starting.
+        const { renderWithHyperframes } = await import("./lib/hyperframes.mjs");
+        const hfOut = await renderWithHyperframes({
+          script, timeline, outDir: OUT, publicDir: path.join(ROOT, "public"), log,
+          workers: hfWorkers,
+        });
+        renderer = "hyperframes";
+        stills = hfOut.stills;
+      } catch (err) {
+        fallback = `${err.step || "hyperframes"}: ${err.message}`.slice(0, 300);
+        log(`HyperFrames failed at ${err.step || "?"} (${err.message}); rendering with Remotion instead`);
+      }
+    } else if (wanted !== "remotion") {
+      log(`RENDERER="${wanted}" is not hyperframes or remotion; rendering with Remotion`);
+    }
+    if (renderer === "remotion") stills = await renderRemotion(timeline);
+  }
   const mp4Bytes = (await stat(path.join(OUT, "video.mp4"))).size;
-  log(`render ${renderer}${fallback ? " (fallback)" : ""}: ${timeline.durationS.toFixed(1)}s video, ${(mp4Bytes / 1e6).toFixed(1)} MB`);
+  log(`render ${renderer}${fallback ? " (fallback)" : ""}, template ${templateUsed}${templateFallback ? " (fallback)" : ""}: ${timeline.durationS.toFixed(1)}s video, ${(mp4Bytes / 1e6).toFixed(1)} MB`);
 
   // 4. upload
   if (env.NO_UPLOAD === "1") {
@@ -270,13 +331,15 @@ async function main() {
   step = "done";
   await reportDone(base, renderId, {
     duration_s: Number(timeline.durationS.toFixed(2)),
-    voice_chars: chars + sampleChars,
+    voice_chars: chars + v3Chars + sampleChars,
     voice_model: modelId,
     voice_name: env.ELEVENLABS_VOICE_ID ? "voice id from the environment" : candidate.name,
     render_seconds: Math.round((Date.now() - t0) / 1000),
     // Logged for the pilot; the conductor keeps only the fields it knows.
     renderer,
     renderer_fallback: fallback || undefined,
+    template: templateUsed,
+    template_fallback: templateFallback || undefined,
   });
   log("done: review links are in #ops");
 }
