@@ -227,11 +227,62 @@ variable.
 Agent skills for HyperFrames are in `.claude/skills` and `.agents/skills`
 (`npx skills add heygen-com/hyperframes`; `skills-lock.json` records them).
 
+## Template: v2, or the v3 lead story
+
+The repository variable **`VIDEO_TEMPLATE`** picks the template. It is unset,
+so the render uses the **v2** script and template exactly as before. With
+`VIDEO_TEMPLATE` = `v3`, the job renders the lead story from the script's `v3`
+block (`fieldstate.weekly_video.v3`, sie-engine `sie/serve/weekly_video_v3.py`)
+with HyperFrames, whatever `RENDERER` says. If the block is missing or failed
+in the engine, if the week has neither a lead nor a page from the record, or
+if any step of the v3 render fails, the same run renders v2 as if the
+variable were unset (and `RENDERER` applies). The Actions log says which
+template ran and why; the `done` call adds `template` and
+`template_fallback`, which today's conductor ignores.
+
+`lib/v3.mjs` turns the `v3` block into scenes; `hyperframes/generate.mjs`
+draws them; `hyperframes/runtime.js` has two motion kinds for them (`hl`, the
+highlighter sweep, and `push`, the slow push-in on the page). The look is the
+design sample of Oct 28; the data fills it:
+
+| Scene | What it shows | From the script |
+|---|---|---|
+| `open` | The number of the week, the figure in gold | `cold_open` (`cap`, `voice`, `basis`, `coverage_ok`) |
+| `decided` | Case card, roll call, outcome stamp | `lead.what` |
+| `matters` | A counter and the dated vote strip, a split vote in red | `lead.why_matters` (`basis.strip`) |
+| `ident` | The segment card, silent; no brand bar | the segment's title |
+| `record` | The page, retypeset, the quote highlighted, a slow push-in; no brand bar | `lead.why_decided`, or a picked *From the record* segment |
+| `next` | The next step on the case, or the next posted meeting | `lead.next` |
+| `round` | The other decisions, with a why-chip when the record has one | `round` |
+| `outro` | v2's closing scene | v2 `scenes` |
+
+Rules the template keeps:
+
+- A streak or share line the board file doesn't fully cover
+  (`coverage_ok: false`) says "on the votes we hold", on screen and in the voice.
+- A quote that doesn't name its reasons (`names_reasons: false`) is shown as
+  posted. The side panel says what the record says ("Staff recommended
+  approval.") and never calls it the why. With no quote, the beat says "The
+  record has the vote but not yet the reasons."
+- No next step: the engine falls back to the nearest posted meeting in the
+  same county. With none, the beat is skipped.
+- A round item whose plain headline reads as future tense ("… to consider …")
+  is held out of the round.
+- The page keeps the line "Quoted as posted · retypeset for video".
+- Wheel segments without a template yet (*The long road* and the rest) are
+  logged and left out.
+
+The voice for `open` and `matters` is the engine's. The other lines are put
+together here from the script's fields and spelled with the engine's rules
+(`spell_text`, ported). To try v3, the engine thread sets the repository
+variable `VIDEO_TEMPLATE` to `v3`; to go back, it deletes the variable.
+
 ## Running it elsewhere
 
 `SCRIPT_FILE=script.json NO_VOICE=1 NO_UPLOAD=1 node render.mjs` renders a
 script without a voice or an upload (`npx remotion browser ensure` first).
-Add `RENDERER=hyperframes` for the HyperFrames path (Docker running). The
+Add `RENDERER=hyperframes` for the HyperFrames path (Docker running), or
+`VIDEO_TEMPLATE=v3` for the v3 lead story. The
 image builds on first use; `HF_WORKERS` overrides the capture workers
 (default: CPUs, at most 4).
 `ELEVENLABS_API_KEY=… node sample-voices.mjs` writes the three-voice sample

@@ -74,9 +74,10 @@
   }
 
   // ── per-element motion, declared in the markup ──────────────────────────
-  // data-a: in | pop | stamp | count | dot | pulse | kb   data-at: frames
-  // from the scene's start. Others per kind (data-d, data-x, data-y, ...).
-  function animate(el, s0) {
+  // data-a: in | pop | stamp | count | dot | pulse | kb | hl | push
+  // data-at: frames from the scene's start. Others per kind (data-d, data-x,
+  // data-y, ...). hl and push are the v3 page's.
+  function animate(el, s0, dur) {
     var kind = el.getAttribute("data-a");
     var at = s0 + num(el, "data-at", 0) / FPS;
     if (kind === "in") {
@@ -124,6 +125,23 @@
     } else if (kind === "label") {
       var sl = spring(num(el, "data-damp", 9));
       tl.fromTo(el, { opacity: 0 }, { opacity: 1, duration: sl.dur, ease: sl.ease }, at);
+    } else if (kind === "hl") {
+      // Highlighter: the marker band sweeps across the quote.
+      tl.fromTo(
+        el,
+        { backgroundSize: "0% 100%" },
+        { backgroundSize: "100% 100%", duration: num(el, "data-d", 40) / FPS, ease: "power2.inOut" },
+        at,
+      );
+    } else if (kind === "push") {
+      // Camera push-in: a slow, linear move from data-at to the scene's end.
+      var rest = Math.max(1 / FPS, s0 + dur - at);
+      tl.fromTo(
+        el,
+        { scale: 1, x: 0, y: 0 },
+        { scale: num(el, "data-scale", 1.07), x: num(el, "data-x", 0), y: num(el, "data-y", -40), duration: rest, ease: "none" },
+        at,
+      );
     } else if (kind === "kb") {
       // Ken Burns: interpolate(frame, [0, 16 s], [1.04, 1.16]) and x 0 → -3 %.
       tl.fromTo(el, { scale: 1.04, xPercent: 0 }, { scale: 1.16, xPercent: -3, duration: 16, ease: "none" }, at);
@@ -202,7 +220,7 @@
     tl.fromTo(fade, { opacity: 0 }, { opacity: 1, duration: 12 / FPS, ease: EASE }, s0);
     tl.to(fade, { opacity: 0, duration: 10 / FPS, ease: "none" }, s0 + dur - 10 / FPS);
     var els = sc.querySelectorAll("[data-a]");
-    for (var e = 0; e < els.length; e++) animate(els[e], s0);
+    for (var e = 0; e < els.length; e++) animate(els[e], s0, dur);
     var maps = sc.querySelectorAll("svg[data-draw-at]");
     for (var m = 0; m < maps.length; m++) mapSweep(maps[m], s0);
     ticker(sc, s0, dur);

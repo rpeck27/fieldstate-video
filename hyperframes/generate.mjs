@@ -1,6 +1,7 @@
 // Fieldstate weekly video: script → HyperFrames project.
 //
-// Input: the engine's script (fieldstate.weekly_video.v2) and the timeline
+// Input: the engine's script (fieldstate.weekly_video.v2, or the v3 lead
+// story's scenes from lib/v3.mjs when VIDEO_TEMPLATE=v3) and the timeline
 // lib/timeline.mjs builds from it (scene lengths from the voice clips, the
 // caption cues). Output: a self-contained HyperFrames project folder:
 //
@@ -48,6 +49,8 @@ export const C = {
   reportedSoft: "#f3f0ff",
   white: "#ffffff",
   dim: "rgba(255,255,255,.72)",
+  paper: "#f3eee2",
+  ident: "#071a2e",
 };
 
 const OUTCOME = {
@@ -418,6 +421,223 @@ function fallbackScene(ids, s, ctx) {
   );
 }
 
+// ── v3: the lead story ───────────────────────────
+// Scene kinds open, decided, matters, ident, record, next and round, filled
+// from lib/v3.mjs. The look is the design sample of Oct 28; the data comes
+// from the script. Times are seconds from the scene start, kept inside the
+// scene however long its voice runs.
+
+/** Frames from the scene start, never later than 12 frames before its end. */
+function at(scene, fps) {
+  return (secs) => Math.max(0, Math.min(Math.round(secs * fps), scene.durationInFrames - 12));
+}
+
+const VOTE_WORD = { yes: "Yes", no: "No", absent: "Absent", abstain: "Abstain", recused: "Recused" };
+
+function hookHtml(text) {
+  let s = esc(text);
+  // The first figure with its unit is gold ("23 months"); a bare "no" is set in italics.
+  s = s.replace(/\b(\d[\d,.]*(?:\s+[a-z]+)?)/, '<span class="live">$1</span>');
+  s = s.replace(/\bno\b/, "<em>no</em>");
+  return s;
+}
+
+function v3OpenScene(ids, s, scene, ctx) {
+  const t = at(scene, ctx.fps);
+  const size = String(s.hook || "").length > 44 ? 84 : 104;
+  return (
+    `<div class="abs" style="left:140px;top:${s.sub ? 220 : 280}px;width:1560px">` +
+    kicker(ids, s.kicker || "", t(0.2)) +
+    `<div id="${ids.next("hook")}" class="v3-hook" style="font-size:${size}px" ${a("in", t(0.5), { y: 30, d: 22 })}>${hookHtml(s.hook)}</div>` +
+    (s.sub ? `<div id="${ids.next("hsub")}" class="v3-hook-sub" ${a("in", t(1.6), { y: 20 })}>${esc(s.sub)}</div>` : "") +
+    `<div id="${ids.next("src")}" class="v3-src" ${a("in", t(2.4))}>${esc(s.src || "")}</div>` +
+    `</div>`
+  );
+}
+
+function v3DecidedScene(ids, s, scene, ctx) {
+  const t = at(scene, ctx.fps);
+  const seats = s.seats ?? [];
+  const step = Math.min(0.35, 2.4 / Math.max(1, seats.length));
+  const chips = seats
+    .map((m, i) => {
+      const tone = m.vote === "yes" ? C.doc : m.vote === "no" ? C.deny : C.muted;
+      return (
+        `<div id="${ids.next("seat")}" class="v3-seat${seats.length > 7 ? " small" : ""}" ${a("pop", t(2.2 + i * step), { y: 20 })}>` +
+        `<span class="v3-seat-dot" style="background:${tone}"></span>${esc(m.name)}<b style="color:${tone}">${esc(VOTE_WORD[m.vote] ?? m.vote)}</b></div>`
+      );
+    })
+    .join("");
+  const ok = s.outcome === "approved" || s.outcome === "approved_with_conditions";
+  const tone = ok ? C.doc : C.deny;
+  const stampAt = seats.length ? 2.6 + seats.length * step : 2.2;
+  return (
+    `<div class="abs" style="left:140px;top:190px;width:1640px">` +
+    kicker(ids, s.kicker || "What happened", t(0.1)) +
+    `<div id="${ids.next("dcard")}" class="v3-card" ${a("pop", t(0.4), { y: 40 })}>` +
+    `<div class="v3-card-top"><span class="v3-card-kicker">${esc(s.card_kicker || "")}</span>${tag(s.tier)}</div>` +
+    `<div class="v3-card-head">${esc(s.head || "")}</div>` +
+    `<div class="v3-card-sub">${esc(s.sub || "")}</div>` +
+    (chips ? `<div class="v3-seats">${chips}</div>` : "") +
+    `<div id="${ids.next("dstamp")}" class="v3-stamp" style="color:${tone};border-color:${tone}" ${a("stamp", t(stampAt))}>${esc(s.stamp || "")}</div>` +
+    `</div></div>`
+  );
+}
+
+function v3MattersScene(ids, s, scene, ctx) {
+  const t = at(scene, ctx.fps);
+  const strip = s.strip ?? [];
+  const X0 = 140;
+  const X1 = 1780;
+  const t0 = Date.parse(strip[0]?.date);
+  const t1 = Date.parse(strip[strip.length - 1]?.date);
+  const span = Math.max(1, t1 - t0);
+  const step = Math.min(0.22, 4.0 / Math.max(1, strip.length));
+  const lastSplit = strip.reduce((k, v, i) => (v.no > 0 ? i : k), -1);
+  const seen = {};
+  const ticks = strip
+    .map((v, i) => {
+      let x = X0 + ((Date.parse(v.date) - t0) / span) * (X1 - X0);
+      seen[v.date] = (seen[v.date] || 0) + 1;
+      x += (seen[v.date] - 1) * 16; // same-night votes side by side
+      const split = v.no > 0;
+      const col = split ? C.deny : C.live;
+      const h = split ? 120 : 160;
+      const label = v.this_case
+        ? `<div class="v3-tick-lab end" style="color:${C.live}">${v.yes}–${v.no}<small>${esc(shortDateText(v.date))}</small></div>`
+        : split && i === lastSplit
+          ? `<div class="v3-tick-lab" style="color:#ffb3ad">${v.yes}–${v.no}<small>${esc(shortDateText(v.date))}</small></div>`
+          : "";
+      return (
+        `<div id="${ids.next("tick")}" class="v3-tick" style="left:${x.toFixed(1)}px" ${a("pop", t(1.0 + i * step), { y: 30, damp: 11 })}>` +
+        `<div class="v3-tick-bar" style="background:${col};height:${h}px;top:${790 - h}px"></div>` +
+        `<div class="v3-tick-dot" style="background:${col}"></div>${label}</div>`
+      );
+    })
+    .join("");
+  const [l1, l2] = s.label ?? ["", ""];
+  return (
+    `<div class="abs" style="left:140px;top:170px;width:1640px">` +
+    kicker(ids, s.kicker || "Why it matters", t(0.1)) +
+    `<div style="display:flex;align-items:baseline;gap:30px;margin-top:18px">` +
+    `<div class="v3-big"><span id="${ids.next("big")}" ${a("count", t(0.6), { to: s.count ?? 0, dec: 0, d: 120 })}>0</span></div>` +
+    `<div id="${ids.next("biglab")}" class="v3-big-label" ${a("in", t(0.8), { x: -20 })}>${esc(l1)}<br>${esc(l2)}</div>` +
+    `</div></div>` +
+    `<div id="${ids.next("axis")}" class="v3-axis" ${a("in", t(0.6))}></div>` +
+    ticks +
+    `<div id="${ids.next("msrc")}" class="abs v3-src" style="left:140px;top:906px;margin:0" ${a("in", t(5.4))}>${esc(s.src || "")}</div>`
+  );
+}
+
+function shortDateText(iso) {
+  const d = new Date(`${iso}T12:00:00Z`);
+  return Number.isNaN(d.getTime())
+    ? ""
+    : `${d.toLocaleString("en-US", { month: "short", timeZone: "UTC" })} ${d.getUTCDate()}, ${d.getUTCFullYear()}`;
+}
+
+function v3IdentScene(ids, s) {
+  return (
+    `<div class="v3-ident">` +
+    `<div id="${ids.next("rule")}" class="v3-ident-rule" ${a("in", 0, { x: -60, d: 10 })}></div>` +
+    `<div id="${ids.next("itext")}" class="v3-ident-text" ${a("in", 3, { y: 20, d: 12 })}>${esc(s.title || "")}</div>` +
+    `<div id="${ids.next("rule")}" class="v3-ident-rule" ${a("in", 0, { x: 60, d: 10 })}></div>` +
+    `</div>`
+  );
+}
+
+function paperLines(n, seed) {
+  const widths = [96, 88, 93, 71, 98, 84, 90, 62];
+  return Array.from({ length: n }, (_, i) => `<div class="v3-pline" style="width:${widths[(i + seed) % 8]}%"></div>`).join("");
+}
+
+function v3RecordScene(ids, s, scene, ctx) {
+  const t = at(scene, ctx.fps);
+  if (s.no_quote) {
+    return (
+      `<div class="abs" style="left:140px;top:300px;width:1500px">` +
+      kicker(ids, s.side_k || "From the record", t(0.1)) +
+      `<div id="${ids.next("nq")}" class="v3-noquote" ${a("in", t(0.4), { y: 24, d: 20 })}>${esc(s.side_1 || "")}</div>` +
+      `</div>`
+    );
+  }
+  ctx.grain = true;
+  const q = String(s.quote || "");
+  const size = q.length <= 140 ? 46 : q.length <= 260 ? 38 : 32;
+  const before = q.length <= 140 ? [5, 3] : q.length <= 260 ? [3, 2] : [2, 0];
+  const after = q.length <= 260 ? 4 : 2;
+  const long = String(s.side_1 || "").length > 48;
+  return (
+    `<div id="${ids.next("cam")}" class="v3-camera" ${a("push", 0, { scale: 1.07, y: -40 })}>` +
+    `<div class="v3-paper">` +
+    `<div class="v3-paper-head"><span>${esc(s.paper_head || "")}</span><span>${esc(s.paper_id || "")}</span></div>` +
+    `<div class="v3-paper-title">${esc(s.paper_title || "")}</div>` +
+    paperLines(before[0], 0) +
+    `<div class="v3-pgap"></div>` +
+    paperLines(before[1], 3) +
+    `<p class="v3-pquote" style="font-size:${size}px"><span id="${ids.next("hl")}" class="v3-hl" ${a("hl", t(2.6), { d: 50 })}>${esc(q)}</span></p>` +
+    paperLines(after, 5) +
+    `<div class="v3-paper-foot">Page ${esc(s.page ?? "")}</div>` +
+    `</div></div>` +
+    `<div class="v3-grain"></div><div class="v3-vignette"></div>` +
+    `<div id="${ids.next("side")}" class="abs v3-side" ${a("in", t(4.6), { x: 30 })}>` +
+    `<div class="v3-side-k">${esc(s.side_k || "")}</div>` +
+    `<div class="v3-side-1${long ? " small" : ""}">${esc(s.side_1 || "")}</div>` +
+    (s.side_2 ? `<div id="${ids.next("side2")}" class="v3-side-2" ${a("in", t(6.6), { y: 12 })}>${esc(s.side_2)}</div>` : "") +
+    `<div class="v3-side-src">${esc(s.side_src || "")}<br>${esc(s.label || "Quoted as posted · retypeset for video")}</div>` +
+    `</div>`
+  );
+}
+
+function v3NextScene(ids, s, scene, ctx) {
+  const t = at(scene, ctx.fps);
+  const rows = (s.rows ?? [])
+    .map(
+      (r, i) =>
+        `<div id="${ids.next("arow")}" class="v3-arow" ${a("in", t(1.6 + i * 0.6), { x: -16 })}><span class="v3-adot"></span>${esc(r)}</div>`,
+    )
+    .join("");
+  return (
+    `<div class="abs" style="left:140px;top:200px;width:1640px">` +
+    kicker(ids, s.kicker || "What's next", t(0.1)) +
+    `<div id="${ids.next("ncard")}" class="v3-agenda" ${a("pop", t(0.5), { y: 40 })}>` +
+    `<div class="v3-when"><div class="v3-when-day">${esc(s.when?.[0] ?? "")}</div><div class="v3-when-date">${esc(s.when?.[1] ?? "")}</div><div class="v3-when-time">${esc(s.time || "")}</div></div>` +
+    `<div class="v3-agenda-body"><div class="v3-agenda-place">${esc(s.place || "")}</div><div class="v3-agenda-items">${rows}</div></div>` +
+    `</div></div>`
+  );
+}
+
+function v3RoundScene(ids, s, scene, ctx) {
+  const t = at(scene, ctx.fps);
+  const items = s.items ?? [];
+  const step = Math.min(1.2, Math.max(0.4, (scene.durationInFrames / ctx.fps - 2) / Math.max(1, items.length)));
+  const cards = items
+    .map((it, i) => {
+      const out = it.outcome ? OUTCOME[it.outcome] ?? "Decided" : "Decided";
+      const ok = it.outcome === "approved" || it.outcome === "approved_with_conditions";
+      const head = [it.kind_label, it.place_short].filter(Boolean).join(" · ");
+      return (
+        `<div id="${ids.next("rcard")}" class="v3-rcard" ${a("pop", t(0.5 + i * step), { y: 30, damp: 16 })}>` +
+        `<div class="card-head"><span class="card-kicker">${esc(head)}</span>${tag(it.tier)}</div>` +
+        `<div class="v3-rtext">${esc(it.text)}</div>` +
+        `<div class="v3-rfoot"><span class="v3-rout" style="color:${ok ? C.doc : C.deny};border-color:${ok ? C.doc : C.deny}">${esc(out)}</span>` +
+        (it.chip ? `<span class="v3-chip">${esc(it.chip)}</span>` : "") +
+        `</div></div>`
+      );
+    })
+    .join("");
+  return (
+    `<div class="abs" style="left:140px;top:160px;width:1640px">` +
+    kicker(ids, s.kicker || "Also decided", t(0.1)) +
+    `<div class="v3-round${items.length > 2 ? " grid" : ""}">${cards}</div>` +
+    `</div>`
+  );
+}
+
+/** v3 scenes that hide the brand bar so the paper fills the frame. */
+export const NO_BRAND_KINDS = new Set(["ident", "record"]);
+const V3_KINDS = new Set(["open", "decided", "matters", "ident", "record", "next", "round"]);
+
 function sceneBody(scene, i, ctx) {
   const s = scene.screen ?? {};
   const ids = new Ids(`s${i}`);
@@ -435,6 +655,20 @@ function sceneBody(scene, i, ctx) {
       return legislatureScene(ids, s, ctx);
     case "outro":
       return outroScene(ids, s, ctx);
+    case "open":
+      return v3OpenScene(ids, s, scene, ctx);
+    case "decided":
+      return v3DecidedScene(ids, s, scene, ctx);
+    case "matters":
+      return v3MattersScene(ids, s, scene, ctx);
+    case "ident":
+      return v3IdentScene(ids, s);
+    case "record":
+      return v3RecordScene(ids, s, scene, ctx);
+    case "next":
+      return v3NextScene(ids, s, scene, ctx);
+    case "round":
+      return v3RoundScene(ids, s, scene, ctx);
     default:
       return fallbackScene(ids, s, ctx);
   }
@@ -522,6 +756,77 @@ body{font-family:"Geist",sans-serif;-webkit-font-smoothing:antialiased}
 .cap-pill{display:block;max-width:1500px;font-family:"Geist";font-weight:600;font-size:44px;line-height:1.25;color:${C.white};background:rgba(6,24,44,.82);padding:14px 30px;border-radius:14px;text-align:center}
 `;
 
+// v3 styles, added to the page only when a v3 scene is in it (a v2 page is
+// byte for byte what it was). From the design sample of Oct 28.
+const CSS_V3 = `
+.v3-hook{font-family:"Newsreader";font-weight:600;line-height:1.02;letter-spacing:-.02em;color:${C.white};margin-top:26px;max-width:1560px}
+.v3-hook em,.v3-big-label em{font-style:italic;font-weight:500}
+.v3-hook-sub{font-family:"Newsreader";font-weight:500;font-size:46px;line-height:1.2;color:${C.white};margin-top:30px;max-width:1500px}
+.v3-src{font-family:"Geist";font-size:20px;color:${C.dim};margin-top:34px}
+.v3-card{background:${C.card};border-radius:22px;padding:40px 48px 44px;margin-top:30px;position:relative;box-shadow:0 30px 70px rgba(0,0,0,.35)}
+.v3-card-top{display:flex;align-items:center;gap:18px;padding-right:330px}
+.v3-card-kicker{font-family:"Geist";font-size:22px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:${C.muted}}
+.v3-card-head{font-family:"Newsreader";font-weight:600;font-size:64px;line-height:1.06;letter-spacing:-.015em;color:${C.ink};margin-top:12px;max-width:1180px;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.v3-card-sub{font-family:"Geist";font-size:22px;color:${C.body};margin-top:14px}
+.v3-seats{display:flex;flex-wrap:wrap;gap:14px;margin-top:30px;max-width:1300px}
+.v3-seat{display:flex;align-items:center;gap:12px;font-family:"Geist";font-size:26px;font-weight:500;color:${C.ink};border:1px solid ${C.line};background:#f6f9fc;border-radius:999px;padding:10px 20px}
+.v3-seat.small{font-size:21px;padding:8px 16px;gap:10px}
+.v3-seat b{font-weight:700}
+.v3-seat-dot{width:10px;height:10px;border-radius:10px}
+.v3-stamp{position:absolute;right:44px;top:40px;font-family:"Geist";font-weight:700;font-size:34px;letter-spacing:.05em;border:3px solid;border-radius:12px;padding:8px 20px;white-space:nowrap}
+.v3-big{font-family:"Newsreader";font-weight:600;font-size:260px;line-height:.9;color:${C.live};font-variant-numeric:tabular-nums;letter-spacing:-.03em}
+.v3-big-label{font-family:"Newsreader";font-weight:600;font-size:60px;line-height:1.08;color:${C.white}}
+.v3-axis{position:absolute;left:140px;right:140px;top:790px;height:2px;background:rgba(255,255,255,.28)}
+.v3-tick{position:absolute;top:0;width:0}
+.v3-tick-bar{position:absolute;left:-3px;width:6px;border-radius:3px}
+.v3-tick-dot{position:absolute;left:-9px;top:781px;width:18px;height:18px;border-radius:18px;box-shadow:0 0 18px rgba(240,166,43,.6)}
+.v3-tick-lab{position:absolute;left:-60px;width:220px;top:808px;font-family:"Newsreader";font-weight:600;font-size:40px;line-height:1;white-space:nowrap}
+.v3-tick-lab small{display:block;font-family:"Geist";font-weight:500;font-size:17px;color:${C.dim};margin-top:6px}
+.v3-tick-lab.end{left:-210px;text-align:right}
+.v3-ident{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;gap:34px;background:${C.ident}}
+.v3-ident-rule{width:180px;height:2px;background:${C.live}}
+.v3-ident-text{font-family:"Newsreader";font-style:italic;font-weight:500;font-size:84px;color:${C.white};letter-spacing:-.01em}
+.v3-camera{position:absolute;left:150px;top:90px;width:1000px;height:1000px;transform-origin:42% 58%}
+.v3-paper{position:absolute;inset:0 0 -200px 0;background:${C.paper};border-radius:4px;padding:70px 80px;transform:rotate(-1.6deg);box-shadow:0 40px 90px rgba(0,0,0,.55);background-image:linear-gradient(180deg,rgba(255,255,255,.35),rgba(0,0,0,.04)),repeating-linear-gradient(0deg,rgba(80,60,20,.025) 0 2px,transparent 2px 5px)}
+.v3-paper-head{display:flex;justify-content:space-between;gap:24px;font-family:"Newsreader";font-weight:600;font-size:22px;letter-spacing:.08em;text-transform:uppercase;color:#3b3527;border-bottom:2px solid #3b3527;padding-bottom:14px}
+.v3-paper-title{font-family:"Newsreader";font-weight:600;font-size:40px;color:#221d12;margin:34px 0 26px}
+.v3-pline{height:15px;border-radius:3px;background:rgba(45,38,22,.16);margin:0 0 17px}
+.v3-pgap{height:22px}
+.v3-pquote{font-family:"Newsreader";font-weight:500;line-height:1.32;color:#1d180e;margin:14px 0 28px}
+.v3-hl{background-image:linear-gradient(transparent 18%,rgba(240,166,43,.62) 18%,rgba(240,166,43,.62) 92%,transparent 92%);background-repeat:no-repeat;background-size:0% 100%;-webkit-box-decoration-break:clone;box-decoration-break:clone;padding:0 4px}
+.v3-paper-foot{position:absolute;left:80px;right:80px;bottom:250px;text-align:center;font-family:"Newsreader";font-size:22px;color:#5b5341}
+.v3-grain{position:absolute;inset:0;pointer-events:none;opacity:.10;mix-blend-mode:overlay;background-image:url("assets/grain.svg")}
+.v3-vignette{position:absolute;inset:0;pointer-events:none;background:radial-gradient(75% 85% at 35% 50%,transparent 55%,rgba(3,12,24,.75) 100%)}
+.v3-side{left:1310px;top:290px;width:520px}
+.v3-side-k{font-family:"Geist";font-weight:600;font-size:24px;letter-spacing:.14em;text-transform:uppercase;color:${C.live}}
+.v3-side-1{font-family:"Newsreader";font-weight:600;font-size:64px;line-height:1.05;color:${C.white};margin-top:20px}
+.v3-side-1.small{font-size:44px;line-height:1.1}
+.v3-side-2{font-family:"Newsreader";font-weight:600;font-size:56px;line-height:1.05;color:${C.live};margin-top:16px}
+.v3-side-src{font-family:"Geist";font-size:19px;color:${C.dim};margin-top:34px;line-height:1.5}
+.v3-noquote{font-family:"Newsreader";font-weight:600;font-size:84px;line-height:1.08;letter-spacing:-.015em;color:${C.white};margin-top:26px}
+.v3-agenda{display:flex;background:${C.card};border-radius:22px;overflow:hidden;margin-top:30px;box-shadow:0 30px 70px rgba(0,0,0,.4);max-width:1300px}
+.v3-when{width:270px;flex:none;background:${C.navy2};color:${C.white};display:flex;flex-direction:column;align-items:center;justify-content:center;padding:30px 0;border-right:5px solid ${C.live}}
+.v3-when-day{font-family:"Geist";font-weight:700;font-size:26px;letter-spacing:.12em;color:${C.live}}
+.v3-when-date{font-family:"Newsreader";font-weight:600;font-size:68px;line-height:1.1;white-space:nowrap}
+.v3-when-time{font-family:"Geist";font-size:20px;color:${C.dim}}
+.v3-agenda-body{padding:34px 40px;flex:1}
+.v3-agenda-place{font-family:"Newsreader";font-weight:600;font-size:52px;color:${C.ink};line-height:1.1}
+.v3-agenda-items{display:grid;gap:16px;margin-top:22px}
+.v3-arow{display:flex;align-items:center;gap:14px;font-family:"Geist";font-size:30px;color:${C.body}}
+.v3-adot{width:11px;height:11px;border-radius:11px;background:${C.live};flex:none}
+.v3-round{display:grid;gap:22px;margin-top:30px;max-width:1300px}
+.v3-round.grid{grid-template-columns:1fr 1fr;max-width:none}
+.v3-rcard{background:${C.card};border-radius:18px;padding:24px 30px 24px;box-shadow:0 24px 60px rgba(0,0,0,.35);border:1px solid ${C.line}}
+.v3-rtext{font-family:"Newsreader";font-size:36px;font-weight:600;color:${C.ink};margin-top:8px;line-height:1.15;letter-spacing:-.01em;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.v3-rfoot{display:flex;align-items:center;gap:14px;margin-top:16px}
+.v3-rout{font-family:"Geist";font-weight:700;font-size:20px;letter-spacing:.04em;text-transform:uppercase;border:2px solid;border-radius:9px;padding:4px 12px}
+.v3-chip{font-family:"Geist";font-weight:600;font-size:20px;color:${C.navy};background:${C.live};border-radius:999px;padding:6px 14px}
+.brand{position:absolute;left:110px;top:44px;display:flex;align-items:center;gap:18px;z-index:5}
+`;
+
+const GRAIN_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="300" height="300"><filter id="n"><feTurbulence type="fractalNoise" baseFrequency=".9" numOctaves="2" seed="7"/></filter><rect width="100%" height="100%" filter="url(#n)"/></svg>
+`;
+
 /**
  * Caption groups from the imported transcript (one entry per VTT cue), shown
  * from 0.05 s before the cue to 0.2 s after (never into the next cue), and
@@ -555,9 +860,10 @@ export function compositionHtml({ script, timeline, transcript }) {
   const fps = timeline.fps;
   const duration = sec(timeline.totalFrames, fps);
   const map = stateMap(script.state);
-  const ctx = { fps, map, state: script.state, title: script.title, photos: new Set() };
+  const ctx = { fps, map, state: script.state, title: script.title, photos: new Set(), grain: false };
   const close = timeline.scenes.find((s) => s.kind === "outro");
-  const open = timeline.scenes.find((s) => s.kind === "title");
+  const open = timeline.scenes.find((s) => s.kind === "title") ?? timeline.scenes.find((s) => s.kind === "open");
+  const v3 = timeline.scenes.some((s) => V3_KINDS.has(s.kind));
   const weekLabel = open?.screen?.week_label || `week of ${script.week_of}`;
   const brandUntil = close ? sec(close.from, fps) : duration;
   const audio = [];
@@ -588,10 +894,17 @@ export function compositionHtml({ script, timeline, transcript }) {
         `<div id="cap-${i}" class="clip cap-group" data-start="${g.start}" data-duration="${g.duration}" data-track-index="3"><span class="cap-pill">${esc(g.text)}</span></div>`,
     )
     .join("\n");
-  const brand =
+  const brandInner = `${wordmark(30)}<span class="brand-sep"></span><span class="brand-text">${esc(script.state_name || script.state)} · ${esc(weekLabel)}</span>`;
+  let brand =
     brandUntil > 0
-      ? `<div id="brand" class="clip" data-start="0" data-duration="${brandUntil}" data-track-index="4">${wordmark(30)}<span class="brand-sep"></span><span class="brand-text">${esc(script.state_name || script.state)} · ${esc(weekLabel)}</span></div>`
+      ? `<div id="brand" class="clip" data-start="0" data-duration="${brandUntil}" data-track-index="4">${brandInner}</div>`
       : "";
+  if (v3) {
+    // v3: the brand bar steps aside for the segment card and the page.
+    brand = brandSpans(timeline, brandUntil)
+      .map(([start, dur], i) => `<div id="brand-${i}" class="clip brand" data-start="${start}" data-duration="${dur}" data-track-index="4">${brandInner}</div>`)
+      .join("");
+  }
   const data = JSON.stringify({ fps, duration, state: script.state, week_of: script.week_of }).replace(/</g, "\\u003c");
   const runtime = RUNTIME_JS;
   const html = `<!doctype html>
@@ -603,7 +916,7 @@ export function compositionHtml({ script, timeline, transcript }) {
 <script src="assets/gsap.min.js"></script>
 <style>
 ${fontFaces()}
-${CSS}
+${CSS}${v3 ? CSS_V3 : ""}
 </style>
 </head>
 <body>
@@ -621,7 +934,24 @@ ${runtime}
 </body>
 </html>
 `;
-  return { html, photos: [...ctx.photos], duration, captionGroups: groups.length };
+  return { html, photos: [...ctx.photos], duration, captionGroups: groups.length, grain: ctx.grain };
+}
+
+/** [start, duration] seconds the brand bar shows: up to the close, minus ident and record scenes. */
+export function brandSpans(timeline, until) {
+  const fps = timeline.fps;
+  const spans = [];
+  let from = 0;
+  for (const sc of timeline.scenes) {
+    const s0 = sec(sc.from, fps);
+    if (s0 >= until) break;
+    if (NO_BRAND_KINDS.has(sc.kind)) {
+      if (s0 > from) spans.push([from, Number((s0 - from).toFixed(4))]);
+      from = sec(sc.from + sc.durationInFrames, fps);
+    }
+  }
+  if (until > from) spans.push([from, Number((until - from).toFixed(4))]);
+  return spans;
 }
 
 const RUNTIME_JS = await readFile(path.join(HERE, "runtime.js"), "utf8");
@@ -643,6 +973,7 @@ export async function writeProject({ script, timeline, outDir, audioRoot, transc
   for (const [file] of FONT_FILES) {
     await copyFile(require.resolve(file), path.join(outDir, "assets", "fonts", path.basename(file)));
   }
+  if (out.grain) await writeFile(path.join(outDir, "assets", "grain.svg"), GRAIN_SVG);
   for (const file of out.photos) {
     await mkdir(path.dirname(path.join(outDir, "assets", file)), { recursive: true });
     await copyFile(path.join(ROOT, "public", file), path.join(outDir, "assets", file));
