@@ -11,6 +11,23 @@ Public repositories get standard runners free, so a render costs no Actions
 minutes. GitHub ignores a `.github` folder that is not at a repository's root,
 so the workflow never runs inside sie-engine.
 
+**The mirror.** Copy sie-engine `scripts/video/` into the root of
+`fieldstate-video`, add and overwrite files, and commit the copy as "Mirror
+sie-engine #NNN". When a change is made in `fieldstate-video` first (as with
+the HyperFrames pilot), copy it back here in a sie-engine PR.
+
+Some paths exist only in `fieldstate-video`. A copy must leave them in place
+and must never delete them:
+
+- `.claude/skills/` and `.agents/skills/`: the vendored HyperFrames agent
+  skills, about 4 MB, recorded in `skills-lock.json`. They are installed
+  there with `npx skills add heygen-com/hyperframes` and are not kept in
+  sie-engine.
+- `.git/`.
+
+So never sync with "delete files missing from the source". If a file is
+removed here, remove it in `fieldstate-video` by hand.
+
 ## How a week goes
 
 | When (ET) | What happens | Where |
