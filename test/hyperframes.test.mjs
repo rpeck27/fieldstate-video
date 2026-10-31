@@ -210,10 +210,13 @@ test("stills: the same moments the Remotion path picks", () => {
   assert.deepEqual(t.stills.map((s) => s[0]), ["still-open.jpg", "still-card.jpg", "still-close.jpg"]);
 });
 
-test("render.mjs: Remotion stays the default; HyperFrames only on RENDERER=hyperframes", async () => {
+test("render.mjs: Remotion stays the default for NC; HyperFrames on RENDERER=hyperframes or any other state", async () => {
   const src = await readFile(new URL("../render.mjs", import.meta.url), "utf8");
   assert.match(src, /const wanted = \(env\.RENDERER \|\| "remotion"\)/);
-  assert.match(src, /if \(wanted === "hyperframes"\) \{\s*try \{/);
+  assert.match(src, /const ncMap = String\(script\.state \|\| ""\)\.trim\(\)\.toUpperCase\(\) === "NC";/);
+  assert.match(src, /if \(wanted === "hyperframes" \|\| !ncMap\) \{\s*try \{/);
+  // Another state never falls back to the North Carolina-only Remotion map.
+  assert.match(src, /catch \(err\) \{\s*if \(!ncMap\) \{\s*step = `hyperframes-[\s\S]{0,240}?throw err;/);
   // The HyperFrames module is loaded only inside that try: it can never stop a Remotion render.
   assert.doesNotMatch(src, /^import .*lib\/hyperframes\.mjs/m);
   const wf = await readFile(new URL("../.github/workflows/render.yml", import.meta.url), "utf8");

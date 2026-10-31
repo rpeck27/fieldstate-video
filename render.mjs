@@ -225,10 +225,17 @@ async function main() {
   // captions, lint, image, render, frames, a timeout) falls back to Remotion
   // in this same run, with the same voice, so the week still gets a video.
   const wanted = (env.RENDERER || "remotion").trim().toLowerCase();
+  // The Remotion composition draws only the North Carolina map
+  // (src/nc-counties.json). Any other state (Texas) renders with HyperFrames,
+  // which bakes the script's own state map (hyperframes/geo.mjs), and never
+  // falls back to Remotion: a HyperFrames failure fails the render (the
+  // conductor retries it once and says so in #ops) rather than ship a video
+  // with the wrong state's map.
+  const ncMap = String(script.state || "").trim().toUpperCase() === "NC";
   let renderer = "remotion";
   let fallback = "";
   let stills = [];
-  if (wanted === "hyperframes") {
+  if (wanted === "hyperframes" || !ncMap) {
     try {
       // Loaded only here: nothing in the HyperFrames path can stop a
       // Remotion render from starting.
@@ -240,6 +247,11 @@ async function main() {
       renderer = "hyperframes";
       stills = hfOut.stills;
     } catch (err) {
+      if (!ncMap) {
+        step = `hyperframes-${err.step || "render"}`;
+        log(`HyperFrames failed at ${err.step || "?"} (${err.message}); no Remotion fallback for ${script.state} (its map is North Carolina's)`);
+        throw err;
+      }
       fallback = `${err.step || "hyperframes"}: ${err.message}`.slice(0, 300);
       log(`HyperFrames failed at ${err.step || "?"} (${err.message}); rendering with Remotion instead`);
     }
