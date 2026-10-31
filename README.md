@@ -23,6 +23,13 @@ so the workflow never runs inside sie-engine.
 
 Nothing is public before approval: the script and the render sit in the
 private bucket, and `feeds/videos.json` lists only approved, published videos.
+
+**States.** North Carolina and Texas every week (conductor var
+`SIE_WEEKLY_VIDEO_STATES` = `NC,TX`). Each state is its own dispatch of this
+workflow, its own #ops Watch / Approve / Reject message and its own entry in
+`feeds/videos.json`. The workflow's concurrency group runs them one after the
+other.
+
 The public copies sit under a 128-bit random path segment drawn when
 publishing starts, so no media URL can be guessed before the feed lists it.
 
@@ -60,9 +67,9 @@ and is logged); and the close on fieldstate.org/nc.
 Plain words only: a case is said only from its checked plain headline
 (`headline_plain`) or the site's short form; a raw government title or a
 file number is never said, and that case is left out. A week with nothing
-plain to say is not rendered (the conductor says so in #ops; the manual
-trigger takes `thin=1` to render it anyway). Every number is checked against
-the record, dollar figures by `sie/serve/money_check.py`, private names
+plain to say still renders with what there is; the conductor's #ops line
+says it is a thin week, and it is approved or rejected as usual. Every
+number is checked against the record, dollar figures by `sie/serve/money_check.py`, private names
 scrubbed (`sie/serve/person_names.py`) except approved honorees
 (`sie/serve/honor.py`).
 
@@ -106,7 +113,7 @@ repository variable `ELEVENLABS_VOICE` (`daniel` or `brian`) in
 
 | | Per render | Notes |
 |---|---|---|
-| ElevenLabs voice | the script caps the voice at 1,250 characters (about a minute and a half at the slower read) | Model `eleven_v4`. The dollar cost is whatever that model bills on the account; this note does not guess it. |
+| ElevenLabs voice | the script caps the voice at 1,250 characters (about a minute and a half at the slower read), plus the three voice samples (at most 420 characters each): at most about 2,510 characters | Model `eleven_v4`. The dollar cost is whatever that model bills on the account; this note does not guess it. Two states (NC, TX) is two renders a week: at most about 5,000 characters a week, about 21,800 a month, double that only if both renders need their one automatic retry. |
 | GitHub Actions | $0 | Standard runners are free for public repositories. |
 | Cloudflare | $0 | R2 storage (a few MB a week), a few dozen R2 operations and Worker requests: inside the free allowances. |
 
@@ -159,8 +166,13 @@ on Saturday morning.
 
 ## Renderer: Remotion, or HyperFrames (pilot, engine brief Oct 26)
 
-The repository variable **`RENDERER`** picks the renderer. It is unset, so the
-render uses **Remotion**, exactly as before. With `RENDERER` = `hyperframes`, the
+The repository variable **`RENDERER`** picks the renderer for North Carolina.
+It is unset, so the NC render uses **Remotion**, exactly as before. The Remotion
+composition draws only the North Carolina map (`src/nc-counties.json`), so any
+other state (Texas) always renders with HyperFrames, which bakes the script's
+own state map, and never falls back to Remotion: a HyperFrames failure fails
+the render at step `hyperframes-<step>`, the conductor retries it once and says
+so in #ops. With `RENDERER` = `hyperframes`, the
 job renders with [HyperFrames](https://github.com/heygen-com/hyperframes)
 (Apache-2.0, run locally; no HeyGen account) and, if anything in that path
 fails, renders the same voiced timeline with Remotion **in the same run**. It
