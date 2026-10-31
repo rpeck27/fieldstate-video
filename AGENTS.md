@@ -7,8 +7,9 @@ both together: a change made only here is lost at the next "Mirror sie-engine" c
 
 ## HyperFrames
 
-The HyperFrames skills are in `.claude/skills` and `.agents/skills`. They describe more than
-this repository may use.
+The HyperFrames skills are in `.claude/skills` and `.agents/skills`. They exist only in
+`fieldstate-video`; sie-engine doesn't carry them, and a mirror copy must leave them in place
+(README, "The mirror"). They describe more than this repository may use.
 
 - Never run `hyperframes publish`, `cloud`, `lambda`, `cloudrun` or `auth`.
 - Never create a HeyGen account or use HeyGen's paid media.
