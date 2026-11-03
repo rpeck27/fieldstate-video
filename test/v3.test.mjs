@@ -3,7 +3,7 @@
 // unchanged byte for byte. Pure: no Docker, no browser, no network.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -20,6 +20,8 @@ import {
   v3RenderScript,
 } from "../lib/v3.mjs";
 import { compositionHtml } from "../hyperframes/generate.mjs";
+import { RENDERED_V2, RENDERED_V3, voiceFacts } from "../lib/conductor.mjs";
+import { renderV3 } from "../lib/render-v3.mjs";
 import { asV3Schema, ncScript, syntheticClip, txScript } from "./fixtures/v3.mjs";
 
 function render(script, { clipFile = null } = {}) {
@@ -310,6 +312,74 @@ test("Your turn: one card, each row comes in as its own line is read (as What's 
   const msc = m.timeline.scenes.find((s) => s.kind === "turn");
   const mrows = [...sceneHtml(m.html, "turn").matchAll(/class="v3-arow" data-a="in" data-at="(\d+)"/g)].map((x) => Number(x[1]));
   assert.deepEqual(mrows, [msc.lineFrames[0][0] + 8, msc.lineFrames[0][0] + 18, msc.lineFrames[1][0] + 8]);
+});
+
+// ── voice spend when v3 falls back to v2 ────────────────────────────────────
+
+async function v3Run({ synthFailAt = -1, renderFails = false } = {}) {
+  const root = await mkdtemp(path.join(tmpdir(), "fs-v3run-"));
+  await mkdir(path.join(root, "public", "audio"), { recursive: true });
+  await mkdir(path.join(root, "out"), { recursive: true });
+  const spent = { chars: 0 };
+  const sent = [];
+  let calls = 0;
+  const synth = async (text) => {
+    if (calls++ === synthFailAt) throw Object.assign(new Error("ElevenLabs 500"), { status: 500 });
+    sent.push(text);
+    return { audio: Buffer.from("mp3"), alignment: estimatedAlignment(text, text.length / 15) };
+  };
+  const renderImpl = async () => {
+    if (renderFails) throw Object.assign(new Error("hyperframes render exited 1"), { step: "render" });
+    return { stills: [] };
+  };
+  let err = null;
+  let got = null;
+  try {
+    got = await renderV3({
+      script: asV3Schema(ncScript()), env: {}, log: () => {}, root, out: path.join(root, "out"), noVoice: false,
+      synth, normalize: (a, b) => copyFile(a, b), probeSeconds: async () => 1, workers: 1, spent, renderImpl,
+    });
+  } catch (e) {
+    err = e;
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+  return { spent, sent, err, got };
+}
+
+test("v3 voice spend is counted even when a later v3 step fails and the run falls back to v2", async () => {
+  // HyperFrames fails after every v3 scene was voiced: every character counts.
+  const late = await v3Run({ renderFails: true });
+  assert.ok(late.err && /hyperframes render exited 1/.test(late.err.message));
+  assert.ok(late.sent.length >= 5);
+  assert.equal(late.spent.chars, late.sent.reduce((n, t) => n + t.length, 0));
+  // ElevenLabs fails on the third scene: the two it voiced count, the failed one does not.
+  const mid = await v3Run({ synthFailAt: 2 });
+  assert.equal(mid.err?.step, "v3-voice");
+  assert.equal(mid.sent.length, 2);
+  assert.equal(mid.spent.chars, mid.sent[0].length + mid.sent[1].length);
+  // A v3 render that succeeds reports the same count it spent.
+  const ok = await v3Run();
+  assert.equal(ok.err, null);
+  assert.equal(ok.got.chars, ok.spent.chars);
+  assert.equal(ok.spent.chars, late.spent.chars);
+});
+
+test("done call: the voice is everything sent, and the schema is what actually rendered", async () => {
+  // Fallback: v3 voiced 1368, then v2 voiced 769 for the video that shipped.
+  assert.deepEqual(voiceFacts({ v2Chars: 769, v3Chars: 1368, sampleChars: 0, templateUsed: "v2" }),
+    { voice_chars: 2137, voice_chars_v3: 1368, voice_chars_v2: 769, rendered_schema: RENDERED_V2 });
+  assert.deepEqual(voiceFacts({ v3Chars: 1368, sampleChars: 300, templateUsed: "v3" }),
+    { voice_chars: 1668, voice_chars_v3: 1368, voice_chars_v2: 0, rendered_schema: RENDERED_V3 });
+  assert.equal(voiceFacts({ v2Chars: 769 }).rendered_schema, RENDERED_V2);
+  // render.mjs reports it so: v3's running count (never reset by a fallback),
+  // v2's, the samples, and the template it actually used.
+  const src = await readFile(new URL("../render.mjs", import.meta.url), "utf8");
+  assert.match(src, /\.\.\.voiceFacts\(\{ v2Chars: chars, v3Chars: v3Spent\.chars, sampleChars, templateUsed \}\)/);
+  assert.match(src, /spent: v3Spent,/);
+  assert.doesNotMatch(src, /v3Chars = got\.chars/);
+  // v2 counts a scene as soon as ElevenLabs returns it, before anything that can fail.
+  assert.match(src, /pronunciationDictionaryLocators: locators \|\| undefined,\n\s+\}\);\n\s+chars \+= scene\.voice\.length;/);
 });
 
 // ── the clip beat ───────────────────────────────────────────────────────────

@@ -27,7 +27,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { estimatedAlignment, toVtt } from "./lib/captions.mjs";
-import { fetchScript, reportDone, reportFailed, uploadFile } from "./lib/conductor.mjs";
+import { fetchScript, reportDone, reportFailed, uploadFile, voiceFacts } from "./lib/conductor.mjs";
 import { buildTimeline } from "./lib/timeline.mjs";
 import {
   DEFAULT_MODEL,
@@ -203,7 +203,9 @@ async function main() {
   }
   let templateUsed = "v2";
   let templateFallback = "";
-  let v3Chars = 0;
+  // Every character ElevenLabs voiced for v3, kept current scene by scene,
+  // so it is reported even when v3 fails later and the run renders v2.
+  const v3Spent = { chars: 0 };
   let timeline;
   let renderer = "remotion";
   let fallback = "";
@@ -221,8 +223,8 @@ async function main() {
         probeSeconds,
         workers: Number(env.HF_WORKERS) || Math.max(1, Math.min(4, cpus().length)),
         onStep: (s) => { step = s; },
+        spent: v3Spent,
       });
-      v3Chars = got.chars;
       timeline = got.timeline;
       stills = got.stills;
       renderer = "hyperframes";
@@ -230,7 +232,7 @@ async function main() {
     } catch (err) {
       if (err && err.cap === "elevenlabs") throw err; // no voice left: v2 can't be voiced either
       templateFallback = `${err.step || "v3"}: ${err.message}`.slice(0, 300);
-      log(`template v3 failed at ${err.step || "?"} (${err.message}); rendering v2 instead`);
+      log(`template v3 failed at ${err.step || "?"} (${err.message}); rendering v2 instead (v3 voiced ${v3Spent.chars} characters, counted)`);
       step = "voice";
     }
   }
@@ -254,6 +256,7 @@ async function main() {
         voiceSettings: candidate.settings,
         pronunciationDictionaryLocators: locators || undefined,
       });
+      chars += scene.voice.length; // voiced: counted before anything else can fail
       const name = `audio/${String(i).padStart(2, "0")}.mp3`;
       const file = path.join(ROOT, "public", name);
       await writeFile(file, out.audio);
@@ -261,7 +264,6 @@ async function main() {
       await run("ffmpeg", ["-y", "-i", file, "-af", LOUDNORM, "-ar", "44100", "-b:a", "128k", normalized]);
       await rename(normalized, file);
       voiced.push({ id: scene.id, audio: name, alignment: out.alignment, audioSeconds: await probeSeconds(file) });
-      chars += scene.voice.length;
     }
     log(`voice ${noVoice ? "skipped (NO_VOICE)" : `${chars} characters, model ${modelId}, ${LOUDNORM}`}`);
 
@@ -330,7 +332,7 @@ async function main() {
   step = "done";
   await reportDone(base, renderId, {
     duration_s: Number(timeline.durationS.toFixed(2)),
-    voice_chars: chars + v3Chars + sampleChars,
+    ...voiceFacts({ v2Chars: chars, v3Chars: v3Spent.chars, sampleChars, templateUsed }),
     voice_model: modelId,
     voice_name: env.ELEVENLABS_VOICE_ID ? "voice id from the environment" : candidate.name,
     render_seconds: Math.round((Date.now() - t0) / 1000),
