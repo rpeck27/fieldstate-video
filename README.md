@@ -288,9 +288,13 @@ timed to the part of the voice that reads it. The spine, in order:
    credit, the lower third, and the tally slammed in at `result_at_s` with the
    label "Unconfirmed · from the meeting video". The stretch is cut to
    `public/clips/lead.mp4` before the project is generated
-   (`lib/clip.mjs`: the town's own download link, ffmpeg reading only that
-   stretch, user agent `CLIP_USER_AGENT` or "FieldstateBot"), so the render
-   stays offline. A failed download skips the beat. `CLIP_FILE` supplies a
+   (`lib/clip.mjs`, ffmpeg reading only that stretch), so the render stays
+   offline. The render job reads the clip only from our own storage: the
+   engine's `lead.clip.hosted_url` on `data.fieldstate.org`
+   (`CLIP_HOSTS`). Town and vendor sites are fetched only by the engine, so
+   `src` and `download_url` (the town's page and its own Download link) are
+   provenance and never fetched here. No `hosted_url`, any other host, or a
+   failed cut skips the beat with the reason logged. `CLIP_FILE` supplies a
    local file for review renders.
 3. **decided**: case card, roll call, outcome stamp. With no reason on record
    (`lead.no_reason`), the line sits under the stamp and there is no page.
@@ -319,7 +323,7 @@ are in `hyperframes/runtime-v3.js`, inlined only into v3 compositions, so
 script without a voice or an upload (`npx remotion browser ensure` first).
 Add `RENDERER=hyperframes` for the HyperFrames path (Docker running), or
 `VIDEO_TEMPLATE=v3` to render a v2 script's `v3` block (`CLIP_FILE=clip.mp4`
-stands in for a clip's download). The
+stands in for the clip's hosted copy). The
 image builds on first use; `HF_WORKERS` overrides the capture workers
 (default: CPUs, at most 4).
 `ELEVENLABS_API_KEY=… node sample-voices.mjs` writes the three-voice sample

@@ -279,7 +279,8 @@ export function txScript() {
 /** A clip as lib/clip.mjs hands it on: the engine's lead.clip shape, synthetic. */
 export function syntheticClip() {
   return {
-    src: "https://example.swagit.com/videos/123", media_start: 130, duration: 17, result_at_s: 15,
+    src: "https://example.swagit.com/videos/123", download_url: "https://example.swagit.com/videos/123/download",
+    hosted_url: null, media_start: 130, duration: 17, result_at_s: 15,
     captions: [
       { start: 0.4, end: 3.2, text: "I move to approve item 7 as presented." },
       { start: 3.4, end: 5.0, text: "Second." },

@@ -3,11 +3,13 @@
 // unchanged byte for byte. Pure: no Docker, no browser, no network.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import test from "node:test";
 
 import { estimatedAlignment, toVtt } from "../lib/captions.mjs";
-import { clipDownloadUrl, clipFfmpegArgs, fetchClip } from "../lib/clip.mjs";
+import { CLIP_HOSTS, clipFfmpegArgs, clipSource, fetchClip } from "../lib/clip.mjs";
 import { buildTimeline, lineWindows } from "../lib/timeline.mjs";
 import {
   ON_THE_VOTES_WE_HOLD,
@@ -106,6 +108,11 @@ test("the engine's real NC golden (sie-engine tests/fixtures/weekly_video_v3), w
   assert.deepEqual(kinds, ["open", "decided", "matters", "ident", "record", "next", "ident", "road", "outro"]);
   assert.equal((sceneHtml(html, "road").match(/class="v3-station"/g) || []).length, 3);
   assert.doesNotMatch(html, /https?:\/\//);
+  // The engine's v3.voice_chars / est_duration_s (the conductor's record)
+  // count exactly what this render voices (sie-engine voice_budget).
+  const { rs, timeline } = render(script);
+  assert.equal(script.v3.voice_chars, rs.scenes.reduce((n, s) => n + s.voice.length, 0));
+  assert.ok(Math.abs(script.v3.est_duration_s - timeline.durationS) <= 1, `${script.v3.est_duration_s} vs ${timeline.durationS}`);
 });
 
 test("placement only: every line on screen and in the voice is the engine's, in order", () => {
@@ -317,17 +324,53 @@ test("clip present: the footage, verbatim captions, credit, label and the tally 
   }
 });
 
-test("clip fetch: the town's own download link, the stretch only, never fatal", async () => {
-  assert.equal(clipDownloadUrl({ src: "https://southlaketx.new.swagit.com/videos/123" }), "https://southlaketx.new.swagit.com/videos/123/download");
-  assert.equal(clipDownloadUrl({ src: "https://example.gov/v.mp4", download_url: "https://example.gov/d.mp4" }), "https://example.gov/d.mp4");
-  const args = clipFfmpegArgs({ media_start: 130, duration: 17 }, "https://x.test/v", "/tmp/o.mp4");
+test("clip fetch: only our own storage, the stretch only, never fatal (ffmpeg mocked, no network)", async () => {
+  assert.deepEqual(CLIP_HOSTS, ["data.fieldstate.org"]);
+  const ok = "https://data.fieldstate.org/videos/clips/tx/2026-10-26/lead-src.mp4";
+  assert.deepEqual(clipSource({ hosted_url: ok }), { url: ok });
+  // The town's page and its Download link are provenance, never fetched.
+  const swagit = { src: "https://southlaketx.new.swagit.com/videos/123", download_url: "https://southlaketx.new.swagit.com/videos/123/download" };
+  assert.match(clipSource(swagit).skip, /no hosted_url/);
+  assert.match(clipSource({ ...swagit, hosted_url: swagit.download_url }).skip, /southlaketx\.new\.swagit\.com is not our storage/);
+  for (const bad of ["http://data.fieldstate.org/x.mp4", "https://data.fieldstate.org.evil.test/x.mp4",
+    "https://evil.test/data.fieldstate.org/x.mp4", "https://data.fieldstate.org:8443/x.mp4", "https://u:p@data.fieldstate.org/x.mp4", "nonsense"]) {
+    assert.ok(clipSource({ hosted_url: bad }).skip, bad);
+  }
+  const args = clipFfmpegArgs({ media_start: 130, duration: 17 }, ok, "/tmp/o.mp4");
   assert.deepEqual(args.slice(args.indexOf("-ss"), args.indexOf("-ss") + 2), ["-ss", "130.00"]);
   assert.deepEqual(args.slice(args.indexOf("-t"), args.indexOf("-t") + 2), ["-t", "17.00"]);
-  assert.equal(args[args.indexOf("-user_agent") + 1], "FieldstateBot");
-  const logs = [];
-  assert.equal(await fetchClip({ src: "x", duration: 0 }, { publicDir: "/tmp/none", log: (l) => logs.push(l), env: {} }), null);
-  assert.equal(await fetchClip({ src: "http://insecure.test/v", duration: 5 }, { publicDir: "/tmp/fs-clip-test", log: (l) => logs.push(l), env: {} }), null);
-  assert.ok(logs.some((l) => /no https/.test(l)));
+  assert.equal(args[args.indexOf("-i") + 1], ok);
+
+  const dir = await mkdtemp(path.join(tmpdir(), "fs-clip-"));
+  try {
+    const calls = [];
+    const run = async (cmd, a) => {
+      calls.push([cmd, a]);
+      await writeFile(a.at(-1), "mp4"); // stands in for the cut stretch
+      return { code: 0, err: "" };
+    };
+    const logs = [];
+    const opts = { publicDir: dir, log: (l) => logs.push(l), env: {}, run };
+    // A Swagit URL is refused: no ffmpeg call, the beat is skipped and logged.
+    assert.equal(await fetchClip({ ...swagit, hosted_url: swagit.download_url, duration: 17 }, opts), null);
+    assert.equal(await fetchClip({ ...swagit, duration: 17 }, opts), null);
+    assert.equal(calls.length, 0);
+    assert.ok(logs.some((l) => /is not our storage \(data\.fieldstate\.org\); skipped/.test(l)) && logs.some((l) => /no hosted_url .*; skipped/.test(l)));
+    // The data host is accepted and is the only URL ffmpeg is given.
+    assert.equal(await fetchClip({ ...swagit, hosted_url: ok, media_start: 130, duration: 17 }, opts), "clips/lead.mp4");
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0][0], "ffmpeg");
+    assert.equal(calls[0][1][calls[0][1].indexOf("-i") + 1], ok);
+    assert.ok(!calls[0][1].some((x) => /swagit/.test(String(x))));
+    // A failed cut is never fatal; no duration is skipped before anything runs.
+    const fail = async () => ({ code: 1, err: "403 Forbidden" });
+    await rm(path.join(dir, "clips"), { recursive: true, force: true });
+    assert.equal(await fetchClip({ hosted_url: ok, duration: 17 }, { ...opts, run: fail }), null);
+    assert.equal(await fetchClip({ hosted_url: ok, duration: 0 }, opts), null);
+    assert.ok(logs.some((l) => /download failed \(1\)/.test(l)));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 // ── the composition ─────────────────────────────────────────────────────────
