@@ -268,7 +268,8 @@ test("The long road: a station per step, the recorded step open, each lit when i
   assert.equal((h.match(/class="v3-mark end"/g) || []).length, 1);
   assert.match(h, /15 months/);
   const road = timeline.scenes.find((s) => s.kind === "road");
-  const on = [...h.matchAll(/data-a="lit"[^>]*data-on="(\d+)"/g)].map((m) => Number(m[1]));
+  // The stations' own lit marks (the case's lot at the last station has its own).
+  const on = [...h.matchAll(/-stlit-\d+" data-a="lit"[^>]*data-on="(\d+)"/g)].map((m) => Number(m[1]));
   assert.equal(on.length, 4);
   road.screen.step_lines.forEach((k, i) => {
     assert.ok(k >= 0, "every station has its line");

@@ -317,6 +317,26 @@ the page and the footage. The v3 motion kinds (`hl`, `push`, `draw`, `lit`)
 are in `hyperframes/runtime-v3.js`, inlined only into v3 compositions, so
 `runtime.js` and every v2 composition stay as they were.
 
+**Isometric figures** (`lib/iso.mjs`, Nov 3): one small drawing per case,
+never a packed town (a cluster of buildings implies a density the record
+doesn't show). The kernel, parts and kind rules are a copy of the site's town
+tile (fieldstate-site `lib/isoKit.js` and `lib/townTile.js` `classifyCase`,
+branch `claude/town-tile`), restyled for the navy look: light hairlines,
+lighter-navy faces, one lit colour (the gold). The kind comes from the card's
+kicker (its kind label: Rezoning, Zoning, Special use, Variance, Site plan,
+Plat, Plan amendment) and the use from its headline; a contract, budget,
+renaming or code-text case gets no building, and neither does an undecided
+outcome. Approved: the building; denied or voted down: an empty dashed lot
+with the requested building as a dashed ghost; withdrawn: the empty lot.
+
+- **round**: beside each card's headline. One at a time, the building rises
+  as the card is read; on the highlight grid it lights with its card (motion
+  kind `glow`).
+- **decided**: a medium building top right, under the stamp, rising before
+  the stamp lands, captioned "Illustration of the use, not a site plan".
+- **The long road**: the case's lot at the last station; the building rises
+  only when the case was approved (`data.outcome`, else the deciding step).
+
 ## Running it elsewhere
 
 `SCRIPT_FILE=script.json NO_VOICE=1 NO_UPLOAD=1 node render.mjs` renders a
