@@ -85,3 +85,17 @@ the two encoders and the two Chrome builds (Remotion's 149, HyperFrames' 152)
 anti-aliasing text differently. The skill notes that encoder differences
 alone account for about 0.05. Side by side, the frames match in layout, type,
 colour and motion.
+
+## v3 scenes (fieldstate-site #172)
+
+The v3 scenes are ported from the surface's hand-built sample
+(`claude/SAMPLE-2026-10-27-weekly-video-lead-build.mjs`, posted on
+fieldstate-site #172 on Oct 28): the same tokens, type, card, stamp, vote
+strip, segment card and page. Two changes from the sample, both asked for:
+the SAMPLE tag is gone, and the content fills the frame (fix 4). The
+sample's `EXTRA_JS` motion (`hl`, the `#cam` push) is `runtime-v3.js`, with
+two more kinds (`draw`, `lit`). It is a second inlined script rather than
+part of `runtime.js` because `runtime.js` is inlined into every composition:
+changing it would change every v2 composition's bytes. The sample's grain was
+an SVG data URL; it is an inline SVG filter here, so the composition holds no
+URL of any kind.

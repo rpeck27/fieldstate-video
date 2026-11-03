@@ -435,6 +435,18 @@ function sceneBody(scene, i, ctx) {
       return legislatureScene(ids, s, ctx);
     case "outro":
       return outroScene(ids, s, ctx);
+    // v3 (fieldstate.weekly_video.v3, lib/v3.mjs). No v2 scene has these kinds.
+    case "open":
+    case "clip":
+    case "decided":
+    case "matters":
+    case "ident":
+    case "record":
+    case "next":
+    case "round":
+    case "road":
+    case "turn":
+      return V3_SCENES[scene.kind](ids, s, scene, ctx);
     default:
       return fallbackScene(ids, s, ctx);
   }
@@ -558,9 +570,13 @@ export function compositionHtml({ script, timeline, transcript }) {
   const ctx = { fps, map, state: script.state, title: script.title, photos: new Set() };
   const close = timeline.scenes.find((s) => s.kind === "outro");
   const open = timeline.scenes.find((s) => s.kind === "title");
-  const weekLabel = open?.screen?.week_label || `week of ${script.week_of}`;
+  // v3 render scripts (lib/v3.mjs) add their own CSS, motion and brand
+  // spans; a v2 composition is written exactly as before.
+  const v3 = isV3(script);
+  const weekLabel = open?.screen?.week_label || (v3 && script.week_label) || `week of ${script.week_of}`;
   const brandUntil = close ? sec(close.from, fps) : duration;
   const audio = [];
+  const clips = [];
   const scenes = timeline.scenes
     .map((scene, i) => {
       const start = sec(scene.from, fps);
@@ -575,6 +591,7 @@ export function compositionHtml({ script, timeline, transcript }) {
           `<audio id="vo-${i}" class="clip" src="assets/${esc(scene.audio)}" data-start="${audioStart}" data-duration="${window}" data-volume="1" data-track-index="2"></audio>`,
         );
       }
+      if (v3 && scene.clip?.file) clips.push(clipVideo(scene, i, start, dur));
       return (
         `<div id="scene-${i}" class="clip scene" data-scene="${esc(scene.id)}" data-kind="${esc(scene.kind)}" data-start="${start}" data-duration="${dur}" data-track-index="1" data-track-kind="graphics">` +
         `<div class="fade">${sceneBody(scene, i, ctx)}</div></div>`
@@ -588,8 +605,9 @@ export function compositionHtml({ script, timeline, transcript }) {
         `<div id="cap-${i}" class="clip cap-group" data-start="${g.start}" data-duration="${g.duration}" data-track-index="3"><span class="cap-pill">${esc(g.text)}</span></div>`,
     )
     .join("\n");
-  const brand =
-    brandUntil > 0
+  const brand = v3
+    ? v3BrandSpans(timeline, fps, script, weekLabel)
+    : brandUntil > 0
       ? `<div id="brand" class="clip" data-start="0" data-duration="${brandUntil}" data-track-index="4">${wordmark(30)}<span class="brand-sep"></span><span class="brand-text">${esc(script.state_name || script.state)} · ${esc(weekLabel)}</span></div>`
       : "";
   const data = JSON.stringify({ fps, duration, state: script.state, week_of: script.week_of }).replace(/</g, "\\u003c");
@@ -603,13 +621,13 @@ export function compositionHtml({ script, timeline, transcript }) {
 <script src="assets/gsap.min.js"></script>
 <style>
 ${fontFaces()}
-${CSS}
+${CSS}${v3 ? CSS_V3 : ""}
 </style>
 </head>
 <body>
 <div id="root" data-composition-id="main" data-start="0" data-duration="${duration}" data-fps="${fps}" data-width="${W}" data-height="${H}">
 <div id="wash"></div>
-${scenes}
+${v3 && clips.length ? `${clips.join("\n")}\n` : ""}${scenes}
 ${brand}
 ${caps}
 ${audio.join("\n")}
@@ -618,13 +636,14 @@ ${audio.join("\n")}
 <script>
 ${runtime}
 </script>
-</body>
+${v3 ? `<script>\n${RUNTIME_V3_JS}\n</script>\n` : ""}</body>
 </html>
 `;
   return { html, photos: [...ctx.photos], duration, captionGroups: groups.length };
 }
 
 const RUNTIME_JS = await readFile(path.join(HERE, "runtime.js"), "utf8");
+const RUNTIME_V3_JS = await readFile(path.join(HERE, "runtime-v3.js"), "utf8");
 
 /**
  * Write the project folder. `audioRoot` holds the voice clips named as the
@@ -648,11 +667,517 @@ export async function writeProject({ script, timeline, outDir, audioRoot, transc
     await copyFile(path.join(ROOT, "public", file), path.join(outDir, "assets", file));
   }
   for (const scene of timeline.scenes) {
+    if (scene.clip?.file) {
+      await mkdir(path.dirname(path.join(outDir, "assets", scene.clip.file)), { recursive: true });
+      await copyFile(path.join(audioRoot, scene.clip.file), path.join(outDir, "assets", scene.clip.file));
+    }
     if (!scene.audio) continue;
     await mkdir(path.join(outDir, "assets", "audio"), { recursive: true });
     await copyFile(path.join(audioRoot, scene.audio), path.join(outDir, "assets", scene.audio));
   }
   return out;
 }
+
+// ── v3: the "why" spine and the wheel (fieldstate-site #172) ─────────────
+//
+// The scenes of a v3 render script (lib/v3.mjs). The look is the approved
+// sample's (claude/SAMPLE-2026-10-27-weekly-video-lead-build.mjs, posted on
+// fieldstate-site #172 on Oct 28) and the surface's 8-fix review of Oct 30:
+// content fills the frame between the brand bar and the captions (fix 4), and
+// each scene carries one source line from `screen.src` instead of a chip per
+// card (fix 5). Every string on screen comes from the script's `screen`; the
+// template only places it. Timing follows the voice: `scene.lineFrames` says
+// when each line is read (lib/timeline.mjs).
+
+export const V3_RENDER_SCHEMA = "fieldstate.weekly_video.v3.render";
+
+export function isV3(script) {
+  return script?.schema === V3_RENDER_SCHEMA;
+}
+
+const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** "2024-11-18" → "Nov 18, 2024" (a date from the script's own data). */
+function dateLabel(iso) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(iso ?? ""));
+  return m ? `${MON[Number(m[2]) - 1]} ${Number(m[3])}, ${m[1]}` : "";
+}
+
+/** Frames from the scene start when line `k` is read, else `fallback`. */
+function lineAt(scene, k, fallback) {
+  const f = scene.lineFrames?.[k]?.[0];
+  return Number.isFinite(f) && k >= 0 ? f : fallback;
+}
+
+/** The hook's figure in gold and a lone "no" in italics, as the sample set it. */
+function hookHtml(text) {
+  let h = esc(text);
+  h = h.replace(/\b(\d[\d,.]*(?:\s+(?:months?|years?|weeks?|days?|votes?|times))?)/, '<span class="live">$1</span>');
+  h = h.replace(/\bno\b/, "<em>no</em>");
+  return h;
+}
+
+function v3Kicker(ids, text, at = 3) {
+  return text ? `<div id="${ids.next("kicker")}" class="kicker v3-kicker" style="color:${C.live}" ${a("in", at, { y: 14 })}>${esc(text)}</div>` : "";
+}
+
+function v3Src(ids, text, at) {
+  return text ? `<div id="${ids.next("src")}" class="v3-src" ${a("in", at)}>${esc(text)}</div>` : "";
+}
+
+function stampTone(outcome) {
+  const o = String(outcome ?? "");
+  if (o === "approved" || o === "approved_with_conditions") return [C.doc, C.docSoft];
+  if (o === "denied" || o === "failed") return [C.deny, C.denySoft];
+  return [C.body, "#f6f9fc"];
+}
+
+function v3Open(ids, s) {
+  const hook = String(s.hook ?? "");
+  const size = hook.length > 90 ? 76 : hook.length > 60 ? 88 : 104;
+  return (
+    `<div class="v3-stage">` +
+    v3Kicker(ids, s.kicker, 6) +
+    `<div id="${ids.next("hook")}" class="v3-hook" style="font-size:${size}px" ${a("in", 15, { y: 30, d: 22 })}>${hookHtml(hook)}</div>` +
+    (s.sub ? `<div id="${ids.next("sub")}" class="v3-sub" ${a("in", 45, { y: 20 })}>${esc(s.sub)}</div>` : "") +
+    v3Src(ids, s.src, 66) +
+    `</div>`
+  );
+}
+
+function v3Decided(ids, s, scene, ctx) {
+  const seats = (s.seats ?? []).filter((m) => m && m.name);
+  const [tone, soft] = stampTone(s.outcome);
+  const seatsAt = scene.audioFrom + 24;
+  const stampAt = lineAt(scene, 1, seatsAt + seats.length * 8 + 12);
+  const noteAt = lineAt(scene, (scene.lines?.length ?? 1) - 1, stampAt + 30);
+  const stampW = String(s.stamp ?? "").length * 28 + 90;
+  const chips = seats
+    .map((m, i) => {
+      const v = String(m.vote ?? "").toLowerCase();
+      const col = v === "yes" ? C.doc : v === "no" ? C.deny : C.muted;
+      const word = v ? v.charAt(0).toUpperCase() + v.slice(1) : "";
+      return `<div id="${ids.next("seat")}" class="v3-seat" ${a("pop", seatsAt + i * 8, { y: 20 })}><span class="v3-seat-dot" style="background:${col}"></span>${esc(m.name)}${word ? `<b style="color:${col}">${esc(word)}</b>` : ""}</div>`;
+    })
+    .join("");
+  const headSize = String(s.head ?? "").length > 80 ? 68 : 84;
+  return (
+    `<div class="v3-stage">` +
+    v3Kicker(ids, s.kicker, 3) +
+    `<div id="${ids.next("card")}" class="v3-card" ${a("pop", 10, { y: 40 })}>` +
+    `<div class="v3-card-kicker" style="padding-right:${stampW}px">${esc(s.card_kicker ?? "")}</div>` +
+    `<div class="v3-card-head" style="font-size:${headSize}px;max-width:${s.stamp ? 1512 - stampW : 1512}px">${esc(s.head ?? "")}</div>` +
+    // One source line per scene (fix 5): the card's sub-line is left off
+    // when the scene's source line already says it.
+    (s.sub && !String(s.src ?? "").includes(s.sub) ? `<div class="v3-card-sub">${esc(s.sub)}</div>` : "") +
+    (chips ? `<div class="v3-seats">${chips}</div>` : "") +
+    (s.stamp ? `<div id="${ids.next("stamp")}" class="v3-stamp" style="color:${tone};background:${soft};border-color:${tone}" ${a("stamp", stampAt)}>${esc(s.stamp)}</div>` : "") +
+    (s.note ? `<div id="${ids.next("note")}" class="v3-note" ${a("in", noteAt, { y: 12 })}>${esc(s.note)}</div>` : "") +
+    `</div>` +
+    v3Src(ids, s.src, 40) +
+    `</div>`
+  );
+}
+
+function v3Matters(ids, s, scene, ctx) {
+  const strip = s.strip ?? [];
+  const X0 = 140;
+  const X1 = 1780;
+  const AXIS = 740;
+  const ts = strip.map((v) => Date.parse(v.date));
+  const t0 = Math.min(...ts);
+  const t1 = Math.max(...ts);
+  const seen = {};
+  const tickAt = scene.audioFrom + 20;
+  const span = Math.max(30, Math.min(7, 200 / Math.max(1, strip.length)) * strip.length);
+  const ticks = strip
+    .map((v, i) => {
+      let x = t1 > t0 ? X0 + ((ts[i] - t0) / (t1 - t0)) * (X1 - X0) : X0 + (i / Math.max(1, strip.length - 1)) * (X1 - X0);
+      seen[v.date] = (seen[v.date] || 0) + 1;
+      if (seen[v.date] > 1) x += 16 * (seen[v.date] - 1);
+      const split = v.no > 0;
+      const last = i === strip.length - 1;
+      const col = split ? C.deny : C.live;
+      const h = split ? 120 : 160;
+      const lab = (txtCol) => `<div class="v3-tick-lab" style="color:${txtCol}">${v.yes}–${v.no}<small>${esc(dateLabel(v.date))}</small></div>`;
+      return (
+        `<div id="${ids.next("tick")}" class="v3-tick${last ? " last" : ""}${split && !last && i === 0 ? " first" : ""}" style="left:${x.toFixed(1)}px" ${a("pop", tickAt + Math.round((span * i) / Math.max(1, strip.length)), { y: 30, damp: 11 })}>` +
+        `<div class="v3-tick-bar" style="background:${col};height:${h}px;top:${AXIS - h}px"></div>` +
+        `<div class="v3-tick-dot" style="background:${col};top:${AXIS - 9}px"></div>` +
+        (split ? lab("#ffb3ad") : last ? lab(C.live) : "") +
+        `</div>`
+      );
+    })
+    .join("");
+  const label = Array.isArray(s.label) ? s.label : [s.label].filter(Boolean);
+  return (
+    `<div class="abs" style="left:140px;top:150px;width:1640px">` +
+    v3Kicker(ids, s.kicker, 3) +
+    `<div style="display:flex;align-items:baseline;gap:34px;margin-top:44px">` +
+    `<div class="v3-big"><span id="${ids.next("count")}" ${a("count", 18, { to: Number(s.count) || 0, dec: 0, d: 90 })}>0</span></div>` +
+    `<div id="${ids.next("blabel")}" class="v3-big-label" ${a("in", 24, { x: -20 })}>${label.map((l) => hookHtml(l).replace(/<span class="live">([^<]*)<\/span>/, "$1")).join("<br>")}</div>` +
+    `</div></div>` +
+    (strip.length ? `<div id="${ids.next("axis")}" class="v3-axis" style="top:${AXIS}px" ${a("draw", 16, { d: 30 })}></div>${ticks}` : "") +
+    `<div class="abs" style="left:140px;right:140px;top:${AXIS + 112}px">${v3Src(ids, s.src, tickAt + span + 20)}</div>`
+  );
+}
+
+function v3Ident(ids, s) {
+  return (
+    `<div class="v3-ident">` +
+    `<div id="${ids.next("rule")}" class="v3-ident-rule" ${a("in", 0, { x: -60, d: 10 })}></div>` +
+    `<div id="${ids.next("ident")}" class="v3-ident-text" ${a("in", 3, { y: 20, d: 12 })}>${esc(s.title ?? "")}</div>` +
+    `<div id="${ids.next("rule")}" class="v3-ident-rule" ${a("in", 0, { x: 60, d: 10 })}></div>` +
+    `</div>`
+  );
+}
+
+/** Film grain over the page, as the sample (an inline SVG filter: no URL). */
+function grain(id) {
+  return `<svg class="v3-grain" width="${W}" height="${H}" aria-hidden="true"><filter id="${id}"><feTurbulence type="fractalNoise" baseFrequency=".9" numOctaves="2" seed="7"/></filter><rect width="100%" height="100%" filter="url(#${id})"/></svg>`;
+}
+
+const PLINE_W = [96, 88, 93, 71, 98, 84, 90, 62];
+function plines(n, seed) {
+  return Array.from({ length: n }, (_, i) => `<div class="v3-pline" style="width:${PLINE_W[(i + seed) % 8]}%"></div>`).join("");
+}
+
+function v3Record(ids, s, scene) {
+  const n = scene.lines?.length ?? 0;
+  const capIdx = (text) => (text ? (scene.lines ?? []).findIndex((l) => l.cap === text) : -1);
+  // A wheel segment's page opens on the line that names its case; the
+  // highlighter runs on the line about the page.
+  const hlAt = lineAt(scene, s.card_head ? 1 : 0, scene.audioFrom) + 12;
+  const sideAt = hlAt + 40;
+  const dupe = s.side_2 && s.outcome_line && s.side_2 === s.outcome_line;
+  const side2At = lineAt(scene, capIdx(s.side_2) >= 0 ? capIdx(s.side_2) : n - 1, sideAt + 50);
+  const outAt = lineAt(scene, capIdx(s.outcome_line) >= 0 ? capIdx(s.outcome_line) : n - 1, sideAt + 60);
+  const q = String(s.quote ?? "");
+  const qSize = q.length > 300 ? 32 : q.length > 180 ? 38 : 46;
+  const compact = !!(s.card_head || s.card_kicker);
+  return (
+    `<div id="${ids.next("cam")}" class="v3-camera" ${a("push", 0, { scale: 1.07, y: -40 })}>` +
+    `<div class="v3-paper">` +
+    `<div class="v3-paper-head"><span>${esc(s.paper_head ?? "")}</span><span>${esc(s.paper_id ?? "")}</span></div>` +
+    `<div class="v3-paper-title">${esc(s.paper_title ?? "")}</div>` +
+    plines(5, 0) +
+    `<div class="v3-pgap"></div>` +
+    plines(3, 3) +
+    `<p class="v3-pquote" style="font-size:${qSize}px"><span id="${ids.next("hl")}" class="v3-hl" ${a("hl", hlAt, { d: 50 })}>${esc(q)}</span></p>` +
+    plines(4, 5) +
+    (s.page != null ? `<div class="v3-paper-foot">Page ${esc(s.page)}</div>` : "") +
+    `</div></div>` +
+    grain(ids.next("noise")) +
+    `<div class="v3-vignette"></div>` +
+    `<div id="${ids.next("side")}" class="abs v3-side${compact ? " compact" : ""}" ${a("in", s.card_head ? scene.audioFrom + 6 : sideAt, { x: 30 })}>` +
+    (s.card_kicker ? `<div class="v3-side-ck">${esc(s.card_kicker)}</div>` : "") +
+    (s.card_head ? `<div class="v3-side-ch">${esc(s.card_head)}</div>` : "") +
+    `<div class="v3-side-k">${esc(s.side_k ?? "")}</div>` +
+    (s.side_1 ? `<div class="v3-side-1">${esc(s.side_1)}</div>` : "") +
+    (s.side_2 && !dupe ? `<div id="${ids.next("s2")}" class="v3-side-2" ${a("in", side2At, { y: 12 })}>${esc(s.side_2)}</div>` : "") +
+    (s.outcome_line ? `<div id="${ids.next("out")}" class="v3-side-out" ${a("in", outAt, { y: 12 })}>${esc(s.outcome_line)}</div>` : "") +
+    `<div class="v3-side-src">${esc(s.side_src ?? "")}${s.label ? `<br>${esc(s.label)}` : ""}</div>` +
+    `</div>`
+  );
+}
+
+function v3AgendaCard(ids, card, at, rowAt) {
+  const when = card.when ?? [];
+  const rows = (card.rows ?? []).filter(Boolean);
+  return (
+    `<div id="${ids.next("agenda")}" class="v3-agenda" ${a("pop", at, { y: 40 })}>` +
+    `<div class="v3-when"><div class="v3-when-day">${esc(when[0] ?? "")}</div><div class="v3-when-date">${esc(when[1] ?? "")}</div>` +
+    (card.time ? `<div class="v3-when-time">${esc(card.time)}</div>` : "") +
+    `</div><div class="v3-agenda-body"><div class="v3-agenda-place">${esc(card.place ?? "")}</div>` +
+    `<div class="v3-agenda-items">` +
+    rows.map((r, i) => `<div id="${ids.next("arow")}" class="v3-arow" ${a("in", rowAt(i), { x: -16 })}><span class="v3-adot"></span>${esc(r)}</div>`).join("") +
+    `</div></div></div>`
+  );
+}
+
+function v3Next(ids, s, scene) {
+  return (
+    `<div class="v3-stage">` +
+    v3Kicker(ids, s.kicker, 3) +
+    v3AgendaCard(ids, s, 12, (i) => lineAt(scene, i, 40 + i * 18) + 8) +
+    `</div>`
+  );
+}
+
+function roundCard(ids, c, opts) {
+  const [tone, soft] = stampTone(c.outcome);
+  const kick = [c.place_short, c.kind_label, c.date_label].filter(Boolean).join(" · ");
+  const stamp = c.outcome_label ? String(c.outcome_label).toUpperCase() : "";
+  return (
+    `<div class="v3-rcard${opts.big ? " big" : ""}">` +
+    `<div class="v3-card-kicker">${esc(kick)}</div>` +
+    `<div class="v3-rhead">${esc(c.text ?? "")}</div>` +
+    `<div class="v3-rfoot">` +
+    (stamp ? `<span id="${ids.next("rstamp")}" class="v3-rstamp" style="color:${tone};background:${soft};border-color:${tone}" ${a("stamp", opts.stampAt)}>${esc(stamp)}</span>` : "") +
+    (c.chip ? `<span id="${ids.next("chip")}" class="v3-why" ${a("in", opts.stampAt + 10, { x: -12 })}>${esc(c.chip)}</span>` : "") +
+    `</div></div>`
+  );
+}
+
+function v3Round(ids, s, scene) {
+  const cards = s.cards ?? [];
+  const itemLines = s.item_lines ?? [];
+  if (s.layout === "one_at_a_time") {
+    const at = lineAt(scene, itemLines[0] ?? 0, 30);
+    const dots = (s.count ?? 1) < 2 ? "" : Array.from({ length: s.count }, (_, i) => `<span class="v3-dot${i === s.index ? " on" : ""}"></span>`).join("");
+    return (
+      `<div class="v3-stage">` +
+      `<div style="display:flex;align-items:center;justify-content:space-between">${v3Kicker(ids, s.kicker, 3)}<div class="v3-dots">${dots}</div></div>` +
+      `<div id="${ids.next("rc")}" style="margin-top:30px" ${a("pop", 10, { y: 40 })}>${roundCard(ids, cards[0] ?? {}, { big: true, stampAt: at + 24 })}</div>` +
+      v3Src(ids, s.src, 30) +
+      `</div>`
+    );
+  }
+  const first = lineAt(scene, itemLines[0] ?? 0, 30);
+  const cols = cards.length <= 4 ? 2 : 3;
+  const grid = cards
+    .map((c, i) => {
+      const on = lineAt(scene, itemLines[i], first + i * 60);
+      const off = i + 1 < cards.length ? lineAt(scene, itemLines[i + 1], on + 60) : -1;
+      return (
+        `<div id="${ids.next("rpop")}" ${a("pop", 8 + i * 5, { y: 30 })}>` +
+        `<div id="${ids.next("lit")}" data-a="lit" data-at="${first}" data-first="${first}" data-on="${on}" data-off="${off}">` +
+        roundCard(ids, c, { big: false, stampAt: on + 20 }) +
+        `</div></div>`
+      );
+    })
+    .join("");
+  return (
+    `<div class="v3-stage">` +
+    v3Kicker(ids, s.kicker, 3) +
+    `<div class="v3-rgrid" style="grid-template-columns:repeat(${cols},1fr)">${grid}</div>` +
+    v3Src(ids, s.src, 30) +
+    `</div>`
+  );
+}
+
+function v3Road(ids, s, scene) {
+  const steps = s.steps ?? [];
+  const n = steps.length;
+  const X0 = 220;
+  const X1 = 1700;
+  const TRACK = 700;
+  const drawD = 36;
+  const gap = (X1 - X0) / Math.max(1, n - 1);
+  const alternate = n > 4;
+  const labW = Math.min(380, alternate ? gap * 2 - 24 : gap - 24);
+  const startAt = scene.audioFrom + 20;
+  const stations = steps
+    .map((st, i) => {
+      const x = X0 + i * gap;
+      const k = s.step_lines?.[i];
+      const at = k != null && k >= 0 ? lineAt(scene, k, startAt + i * 30) : startAt + i * 30;
+      const last = i === n - 1;
+      const above = alternate && i % 2 === 1;
+      const mark = st.recorded ? "v3-mark open" : last ? "v3-mark end" : "v3-mark";
+      const align = i === 0 ? "left" : last ? "right" : "center";
+      const shift = align === "left" ? -14 : align === "right" ? -labW + 14 : -labW / 2;
+      // Every station shows (dim) as the track draws; each lights when its
+      // own line is read.
+      const shown = startAt + Math.round((drawD * i) / Math.max(1, n - 1));
+      return (
+        `<div id="${ids.next("st")}" class="v3-station" style="left:${x.toFixed(1)}px;top:${TRACK}px" ${a("pop", shown, { y: above ? -20 : 20, damp: 12 })}>` +
+        `<div id="${ids.next("stlit")}" data-a="lit" data-at="${shown}" data-first="${shown}" data-on="${Math.max(at, shown + 10)}" data-off="-1" data-lift="0">` +
+        `<div class="${mark}"></div>` +
+        `<div class="v3-st-lab${above ? " above" : ""}" style="width:${labW.toFixed(0)}px;left:${shift.toFixed(0)}px;text-align:${align}">` +
+        `<div class="v3-st-date">${esc(st.date_label)}</div><div class="v3-st-label">${esc(st.label ?? "")}</div></div>` +
+        `</div></div>`
+      );
+    })
+    .join("");
+  return (
+    `<div class="abs" style="left:140px;top:${alternate ? 120 : 160}px;width:1640px">` +
+    `<div style="display:flex;align-items:baseline;gap:22px">${v3Kicker(ids, s.title, 3)}${s.place ? `<span class="v3-road-place">${esc(s.place)}</span>` : ""}</div>` +
+    `<div id="${ids.next("rh")}" class="v3-road-head" ${a("in", 8, { y: 24, d: 20 })}>${esc(s.head ?? "")}</div>` +
+    `<div id="${ids.next("rs")}" class="v3-road-span" ${a("in", 20, { y: 14 })}>` +
+    (s.months_label ? `<span class="live">${esc(s.months_label)}</span>` : "") +
+    (s.span ? `<span class="v3-road-dates">${esc(s.span)}</span>` : "") +
+    `</div></div>` +
+    `<div id="${ids.next("track")}" class="v3-track" style="left:${X0}px;width:${X1 - X0}px;top:${TRACK - 2}px" ${a("draw", startAt - 6, { d: drawD + 6 })}></div>` +
+    stations
+  );
+}
+
+function v3Turn(ids, s, scene) {
+  const items = (s.items ?? [s]).slice(0, 3);
+  // One card (what the engine writes): its rows follow its lines one for one,
+  // so each row comes in as its own line is read, as v3Next. Several cards:
+  // each card's rows come in, staggered, as that card's line is read.
+  const one = !Array.isArray(s.items);
+  const rowAt = (j) => (one ? (i) => lineAt(scene, i, 40 + i * 18) + 8 : (i) => lineAt(scene, j, 40) + 8 + i * 10);
+  return (
+    `<div class="v3-stage">` +
+    v3Kicker(ids, s.kicker, 3) +
+    `<div style="display:grid;gap:22px">` +
+    items.map((it, j) => v3AgendaCard(ids, it, 12 + j * 10, rowAt(j))).join("") +
+    `</div>` +
+    v3Src(ids, s.src, 40) +
+    `</div>`
+  );
+}
+
+function v3ClipOverlay(ids, s, scene, ctx) {
+  const c = scene.clip ?? {};
+  const R = Math.round((Number(c.result_at_s) || 0) * ctx.fps);
+  return (
+    `<div class="v3-clip-shade"></div>` +
+    (c.lower_third ? `<div id="${ids.next("lt")}" class="v3-lower" ${a("in", 6, { x: -30 })}>${esc(c.lower_third)}</div>` : "") +
+    (c.credit ? `<div class="v3-credit">${esc(c.credit)}</div>` : "") +
+    (R > 0
+      ? `<div id="${ids.next("dark")}" class="v3-dark" ${a("in", R, { d: 6 })}></div>` +
+        (c.tally ? `<div class="v3-slam-wrap"><div id="${ids.next("slam")}" class="v3-slam" ${a("pop", R + 2, { scale: 1.8, damp: 12 })}>${esc(c.tally)}</div>` : `<div class="v3-slam-wrap">`) +
+        (c.label ? `<div id="${ids.next("clabel")}" class="v3-clip-label" ${a("in", R + 16, { y: 12 })}>${esc(c.label)}</div>` : "") +
+        `</div>`
+      : c.label
+        ? `<div class="v3-slam-wrap"><div class="v3-clip-label">${esc(c.label)}</div></div>`
+        : "")
+  );
+}
+
+/** The clip's footage: a root-level clip (HyperFrames times the video itself). */
+function clipVideo(scene, i, start, dur) {
+  return `<video id="clipvid-${i}" class="clip v3-clipvid" src="assets/${esc(scene.clip.file)}" data-start="${start}" data-duration="${dur}" data-media-start="0" data-has-audio="true" data-volume="1" data-track-index="2" playsinline></video>`;
+}
+
+const V3_SCENES = {
+  open: (ids, s) => v3Open(ids, s),
+  clip: v3ClipOverlay,
+  decided: v3Decided,
+  matters: v3Matters,
+  ident: (ids, s) => v3Ident(ids, s),
+  record: (ids, s, scene) => v3Record(ids, s, scene),
+  next: (ids, s, scene) => v3Next(ids, s, scene),
+  round: (ids, s, scene) => v3Round(ids, s, scene),
+  road: (ids, s, scene) => v3Road(ids, s, scene),
+  turn: (ids, s, scene) => v3Turn(ids, s, scene),
+};
+
+/** Brand bar spans: hidden over the segment card, the page and the footage (the paper fills the frame), and over the close. */
+const NO_BRAND = new Set(["ident", "record", "clip", "outro"]);
+function v3BrandSpans(timeline, fps, script, weekLabel) {
+  const spans = [];
+  let cur = null;
+  for (const sc of timeline.scenes) {
+    if (NO_BRAND.has(sc.kind)) {
+      cur = null;
+      continue;
+    }
+    if (!cur) {
+      cur = { from: sc.from, to: sc.from + sc.durationInFrames };
+      spans.push(cur);
+    } else {
+      cur.to = sc.from + sc.durationInFrames;
+    }
+  }
+  const inner = `${wordmark(30)}<span class="brand-sep"></span><span class="brand-text">${esc(script.state_name || script.state)} · ${esc(weekLabel)}</span>`;
+  return spans
+    .map((sp, k) => `<div id="brand-${k}" class="clip v3-brand" data-start="${sec(sp.from, fps)}" data-duration="${sec(sp.to - sp.from, fps)}" data-track-index="4">${inner}</div>`)
+    .join("");
+}
+
+const CSS_V3 = `
+.v3-stage{position:absolute;left:140px;right:140px;top:120px;bottom:190px;display:flex;flex-direction:column;justify-content:center}
+.v3-kicker{font-size:26px}
+.v3-src{font-family:"Geist";font-size:21px;color:${C.dim};margin-top:26px}
+.v3-hook{font-family:"Newsreader";font-weight:600;line-height:1.02;letter-spacing:-.02em;color:${C.white};margin-top:26px;max-width:1560px}
+.v3-hook em,.v3-big-label em{font-style:italic;font-weight:500}
+.v3-sub{font-family:"Newsreader";font-weight:500;font-size:44px;line-height:1.2;color:${C.dim};margin-top:30px;max-width:1500px}
+.v3-card{background:${C.card};border-radius:24px;padding:54px 64px 56px;margin-top:28px;position:relative;box-shadow:0 30px 70px rgba(0,0,0,.35)}
+.v3-card-kicker{font-family:"Geist";font-size:25px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:${C.muted}}
+.v3-card-head{font-family:"Newsreader";font-weight:600;line-height:1.05;letter-spacing:-.015em;color:${C.ink};margin-top:34px;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.v3-card-sub{font-family:"Geist";font-size:28px;color:${C.body};margin-top:18px}
+.v3-seats{display:flex;flex-wrap:wrap;gap:16px;margin-top:36px}
+.v3-seat{display:flex;align-items:center;gap:12px;font-family:"Geist";font-size:31px;font-weight:500;color:${C.ink};border:1px solid ${C.line};background:#f6f9fc;border-radius:999px;padding:12px 26px}
+.v3-seat b{font-weight:700}
+.v3-seat-dot{width:11px;height:11px;border-radius:11px}
+.v3-stamp{position:absolute;right:60px;top:46px;font-family:"Geist";font-weight:700;font-size:40px;letter-spacing:.05em;border:3px solid;border-radius:12px;padding:8px 20px;white-space:nowrap}
+.v3-note{font-family:"Newsreader";font-style:italic;font-weight:500;font-size:42px;color:${C.body};margin-top:34px;padding-top:24px;border-top:1px solid ${C.line}}
+.v3-big{font-family:"Newsreader";font-weight:600;font-size:250px;line-height:.9;color:${C.live};font-variant-numeric:tabular-nums;letter-spacing:-.03em}
+.v3-big-label{font-family:"Newsreader";font-weight:600;font-size:60px;line-height:1.08;color:${C.white}}
+.v3-axis{position:absolute;left:140px;right:140px;height:2px;background:rgba(255,255,255,.28);transform-origin:0 50%}
+.v3-tick{position:absolute;top:0;width:0}
+.v3-tick-bar{position:absolute;left:-3px;width:6px;border-radius:3px}
+.v3-tick-dot{position:absolute;left:-9px;width:18px;height:18px;border-radius:18px;box-shadow:0 0 18px rgba(240,166,43,.6)}
+.v3-tick-lab{position:absolute;left:-70px;width:140px;text-align:center;top:758px;font-family:"Newsreader";font-weight:600;font-size:40px;line-height:1;white-space:nowrap}
+.v3-tick-lab small{display:block;font-family:"Geist";font-weight:500;font-size:17px;color:${C.dim};margin-top:6px}
+.v3-tick.last .v3-tick-lab{left:-150px;text-align:right}
+.v3-tick.first .v3-tick-lab{left:-10px;text-align:left}
+.v3-ident{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;gap:34px;background:#071a2e}
+.v3-ident-rule{width:180px;height:2px;background:${C.live}}
+.v3-ident-text{font-family:"Newsreader";font-style:italic;font-weight:500;font-size:84px;color:${C.white};letter-spacing:-.01em}
+.v3-camera{position:absolute;left:150px;top:90px;width:1000px;height:1000px;transform-origin:42% 58%}
+.v3-paper{position:absolute;inset:0 0 -200px 0;background:#f3eee2;border-radius:4px;padding:70px 80px;transform:rotate(-1.6deg);box-shadow:0 40px 90px rgba(0,0,0,.55);background-image:linear-gradient(180deg,rgba(255,255,255,.35),rgba(0,0,0,.04)),repeating-linear-gradient(0deg,rgba(80,60,20,.025) 0 2px,transparent 2px 5px)}
+.v3-paper-head{display:flex;justify-content:space-between;gap:24px;font-family:"Newsreader";font-weight:600;font-size:22px;letter-spacing:.08em;text-transform:uppercase;color:#3b3527;border-bottom:2px solid #3b3527;padding-bottom:14px}
+.v3-paper-title{font-family:"Newsreader";font-weight:600;font-size:40px;color:#221d12;margin:34px 0 26px}
+.v3-pline{height:15px;border-radius:3px;background:rgba(45,38,22,.16);margin:0 0 17px}
+.v3-pgap{height:22px}
+.v3-pquote{font-family:"Newsreader";font-weight:500;line-height:1.32;color:#1d180e;margin:14px 0 28px}
+.v3-hl{background-image:linear-gradient(transparent 18%,rgba(240,166,43,.62) 18%,rgba(240,166,43,.62) 92%,transparent 92%);background-repeat:no-repeat;background-size:0% 100%;-webkit-box-decoration-break:clone;box-decoration-break:clone;padding:0 4px}
+.v3-paper-foot{position:absolute;left:80px;right:80px;bottom:250px;text-align:center;font-family:"Newsreader";font-size:22px;color:#5b5341}
+.v3-grain{position:absolute;left:0;top:0;pointer-events:none;opacity:.10;mix-blend-mode:overlay}
+.v3-vignette{position:absolute;inset:0;pointer-events:none;background:radial-gradient(75% 85% at 35% 50%,transparent 55%,rgba(3,12,24,.75) 100%)}
+.v3-side{left:1290px;top:270px;width:530px}
+.v3-side.compact{top:150px}
+.v3-side-ck{font-family:"Geist";font-weight:600;font-size:19px;letter-spacing:.08em;text-transform:uppercase;color:${C.dim}}
+.v3-side-ch{font-family:"Newsreader";font-weight:600;font-size:42px;line-height:1.12;color:${C.white};margin:10px 0 30px;padding-bottom:26px;border-bottom:1px solid rgba(255,255,255,.18)}
+.v3-side-k{font-family:"Geist";font-weight:600;font-size:24px;letter-spacing:.14em;text-transform:uppercase;color:${C.live}}
+.v3-side-1{font-family:"Newsreader";font-weight:600;font-size:62px;line-height:1.05;color:${C.white};margin-top:20px}
+.v3-side.compact .v3-side-1{font-size:52px}
+.v3-side-2{font-family:"Newsreader";font-weight:600;font-size:62px;line-height:1.05;color:${C.live};margin-top:16px}
+.v3-side-out{font-family:"Newsreader";font-weight:600;font-size:44px;line-height:1.1;color:${C.live};margin-top:22px}
+.v3-side-src{font-family:"Geist";font-size:19px;color:${C.dim};margin-top:34px;line-height:1.5}
+.v3-agenda{display:flex;background:${C.card};border-radius:22px;overflow:hidden;margin-top:30px;box-shadow:0 30px 70px rgba(0,0,0,.4)}
+.v3-when{width:380px;flex:none;background:${C.navy2};color:${C.white};display:flex;flex-direction:column;align-items:center;justify-content:center;padding:56px 0;border-right:6px solid ${C.live}}
+.v3-when-day{font-family:"Geist";font-weight:700;font-size:36px;letter-spacing:.12em;color:${C.live}}
+.v3-when-date{font-family:"Newsreader";font-weight:600;font-size:108px;line-height:1.1;white-space:nowrap}
+.v3-when-time{font-family:"Geist";font-size:30px;color:${C.dim};margin-top:6px}
+.v3-agenda-body{padding:60px 64px;flex:1;display:flex;flex-direction:column;justify-content:center}
+.v3-agenda-place{font-family:"Newsreader";font-weight:600;font-size:80px;color:${C.ink};line-height:1.08;letter-spacing:-.01em}
+.v3-agenda-items{display:grid;gap:22px;margin-top:36px}
+.v3-arow{display:flex;align-items:center;gap:18px;font-family:"Geist";font-size:40px;color:${C.body}}
+.v3-adot{width:15px;height:15px;border-radius:15px;background:${C.live};flex:none}
+.v3-rcard{background:${C.card};border-radius:20px;padding:32px 40px 34px;box-shadow:0 24px 60px rgba(0,0,0,.35);height:100%;display:flex;flex-direction:column}
+.v3-rcard.big{padding:58px 64px 60px;border-radius:24px}
+.v3-rhead{font-family:"Newsreader";font-weight:600;font-size:46px;line-height:1.12;color:${C.ink};margin-top:12px;letter-spacing:-.01em;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.v3-rcard.big .v3-rhead{font-size:84px;line-height:1.05;margin-top:26px}
+.v3-rfoot{display:flex;align-items:center;gap:16px;margin-top:auto;padding-top:22px}
+.v3-rcard.big .v3-rfoot{padding-top:36px}
+.v3-rstamp{font-family:"Geist";font-weight:700;font-size:27px;letter-spacing:.05em;border:2px solid;border-radius:10px;padding:6px 16px;white-space:nowrap}
+.v3-rcard.big .v3-rstamp{font-size:40px;border-width:3px;padding:8px 22px}
+.v3-why{font-family:"Geist";font-weight:600;font-size:27px;color:${C.navy};background:${C.live};border-radius:999px;padding:7px 18px;white-space:nowrap}
+.v3-rcard.big .v3-why{font-size:36px;padding:10px 26px}
+.v3-rgrid{display:grid;gap:26px;margin-top:28px;grid-auto-rows:1fr}
+.v3-dots{display:flex;gap:12px}
+.v3-dot{width:14px;height:14px;border-radius:14px;background:rgba(255,255,255,.25)}
+.v3-dot.on{background:${C.live}}
+.v3-road-place{font-family:"Geist";font-weight:500;font-size:24px;color:${C.dim}}
+.v3-road-head{font-family:"Newsreader";font-weight:600;font-size:68px;line-height:1.06;color:${C.white};letter-spacing:-.015em;margin-top:18px;max-width:1500px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.v3-road-span{display:flex;align-items:baseline;gap:26px;margin-top:22px;font-family:"Newsreader";font-weight:600}
+.v3-road-span .live{font-size:96px;letter-spacing:-.02em;line-height:1}
+.v3-road-dates{font-family:"Geist";font-weight:500;font-size:30px;color:${C.dim}}
+.v3-track{position:absolute;height:4px;border-radius:4px;background:linear-gradient(90deg,rgba(240,166,43,.35),${C.live});transform-origin:0 50%}
+.v3-station{position:absolute;width:0;height:0}
+.v3-mark{position:absolute;left:-15px;top:-15px;width:30px;height:30px;border-radius:30px;background:${C.live};box-shadow:0 0 18px rgba(240,166,43,.6)}
+.v3-mark.open{background:${C.navy};border:4px solid ${C.live};box-shadow:none}
+.v3-mark.end{left:-22px;top:-22px;width:44px;height:44px;border-radius:44px;box-shadow:0 0 26px rgba(240,166,43,.85)}
+.v3-st-lab{position:absolute;top:40px}
+.v3-st-lab.above{top:auto;bottom:40px}
+.v3-st-date{font-family:"Geist";font-weight:600;font-size:25px;color:${C.dim};letter-spacing:.02em}
+.v3-st-label{font-family:"Newsreader";font-weight:600;font-size:40px;line-height:1.12;color:${C.white};margin-top:6px}
+.v3-clipvid{position:absolute;left:0;top:0;width:${W}px;height:${H}px;object-fit:contain;background:#000;z-index:1}
+.v3-clip-shade{position:absolute;inset:0;background:linear-gradient(0deg,rgba(6,24,44,.7) 0%,rgba(6,24,44,0) 38%)}
+.v3-lower{position:absolute;left:110px;bottom:200px;font-family:"Geist";font-weight:600;font-size:32px;color:${C.white};background:rgba(10,37,64,.88);border-left:6px solid ${C.live};padding:14px 26px;border-radius:6px}
+.v3-credit{position:absolute;right:60px;top:48px;font-family:"Geist";font-weight:500;font-size:20px;color:${C.white};background:rgba(6,24,44,.7);border-radius:8px;padding:6px 14px}
+.v3-dark{position:absolute;inset:0;background:rgba(3,12,24,.62)}
+.v3-slam-wrap{position:absolute;left:0;right:0;top:250px;display:flex;flex-direction:column;align-items:center;gap:30px}
+.v3-slam{font-family:"Newsreader";font-weight:600;font-size:280px;line-height:.9;color:${C.live};letter-spacing:-.03em;text-shadow:0 10px 50px rgba(0,0,0,.5)}
+.v3-clip-label{font-family:"Geist";font-weight:600;font-size:26px;color:${C.reported};background:${C.reportedSoft};border:1px solid #ddd4ff;border-radius:999px;padding:9px 22px}
+.v3-brand{position:absolute;left:110px;top:44px;display:flex;align-items:center;gap:18px;z-index:5}
+`;
 
 export { PHOTOS };
