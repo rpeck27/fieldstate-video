@@ -15,6 +15,10 @@
 //   ELEVENLABS_MODEL_ID  optional repository variable
 //   RENDERER             optional repository variable: "hyperframes" or
 //                        "remotion" (the default)
+//   VIDEO_TEMPLATE       local review renders only: "v3" renders a v2 script's
+//                        v3 block. In the workflow the script decides: a
+//                        script whose schema is fieldstate.weekly_video.v3
+//                        renders v3 (lib/v3.mjs), any other renders v2 as before
 // Local runs: SCRIPT_FILE=path NO_VOICE=1 NO_UPLOAD=1 node render.mjs
 import { spawn } from "node:child_process";
 import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
@@ -186,81 +190,125 @@ async function main() {
     log(`voice samples ${samples.length}/${VOICE_CANDIDATES.length}, ${sampleChars} characters`);
   }
 
-  const voiced = [];
-  let chars = 0;
-  for (let i = 0; i < script.scenes.length; i++) {
-    const scene = script.scenes[i];
-    if (noVoice) {
-      voiced.push({ id: scene.id, audio: null, alignment: estimatedAlignment(scene.voice, scene.voice.length / 15) });
-      continue;
-    }
-    const out = await synthesize({
-      text: scene.voice,
-      previousText: script.scenes[i - 1]?.voice ?? "",
-      nextText: script.scenes[i + 1]?.voice ?? "",
-      apiKey: env.ELEVENLABS_API_KEY,
-      voiceId,
-      modelId,
-      voiceSettings: candidate.settings,
-      pronunciationDictionaryLocators: locators || undefined,
-    });
-    const name = `audio/${String(i).padStart(2, "0")}.mp3`;
-    const file = path.join(ROOT, "public", name);
-    await writeFile(file, out.audio);
-    const normalized = `${file}.norm.mp3`;
-    await run("ffmpeg", ["-y", "-i", file, "-af", LOUDNORM, "-ar", "44100", "-b:a", "128k", normalized]);
-    await rename(normalized, file);
-    voiced.push({ id: scene.id, audio: name, alignment: out.alignment, audioSeconds: await probeSeconds(file) });
-    chars += scene.voice.length;
+  // Template (weekly video v3, fieldstate-site #172). The script decides: a
+  // v3 script renders the v3 spine with HyperFrames; if that fails at any
+  // step (no lead, round or segment; voice; generate; lint; render), this
+  // same run renders the v2 scenes exactly as before, so the week still gets
+  // its video. A v2 script never enters this block.
+  let template = "v2";
+  try {
+    template = (await import("./lib/v3.mjs")).templateFor(script, env);
+  } catch (err) {
+    log(`template check failed (${err.message}); rendering v2`);
   }
-  log(`voice ${noVoice ? "skipped (NO_VOICE)" : `${chars} characters, model ${modelId}, ${LOUDNORM}`}`);
-
-  // 3. render
-  step = "render";
-  const timeline = buildTimeline(script, voiced);
-  await writeFile(path.join(OUT, "captions.vtt"), toVtt(timeline.cues));
-  // Renderer (HyperFrames pilot, engine brief Oct 26): the repository
-  // variable RENDERER picks it. Unset or "remotion" renders with Remotion as
-  // before. "hyperframes" tries HyperFrames first; any failure there (setup,
-  // captions, lint, image, render, frames, a timeout) falls back to Remotion
-  // in this same run, with the same voice, so the week still gets a video.
-  const wanted = (env.RENDERER || "remotion").trim().toLowerCase();
-  // The Remotion composition draws only the North Carolina map
-  // (src/nc-counties.json). Any other state (Texas) renders with HyperFrames,
-  // which bakes the script's own state map (hyperframes/geo.mjs), and never
-  // falls back to Remotion: a HyperFrames failure fails the render (the
-  // conductor retries it once and says so in #ops) rather than ship a video
-  // with the wrong state's map.
-  const ncMap = String(script.state || "").trim().toUpperCase() === "NC";
+  let templateUsed = "v2";
+  let templateFallback = "";
+  let v3Chars = 0;
+  let timeline;
   let renderer = "remotion";
   let fallback = "";
   let stills = [];
-  if (wanted === "hyperframes" || !ncMap) {
+  if (template === "v3") {
     try {
-      // Loaded only here: nothing in the HyperFrames path can stop a
-      // Remotion render from starting.
-      const { renderWithHyperframes } = await import("./lib/hyperframes.mjs");
-      const hfOut = await renderWithHyperframes({
-        script, timeline, outDir: OUT, publicDir: path.join(ROOT, "public"), log,
+      const { renderV3 } = await import("./lib/render-v3.mjs");
+      const got = await renderV3({
+        script, env, log, root: ROOT, out: OUT, noVoice,
+        synth: (text, prev, next) => synthesize({
+          text, previousText: prev, nextText: next, apiKey: env.ELEVENLABS_API_KEY, voiceId, modelId,
+          voiceSettings: candidate.settings, pronunciationDictionaryLocators: locators || undefined,
+        }),
+        normalize: (file, normalized) => run("ffmpeg", ["-y", "-i", file, "-af", LOUDNORM, "-ar", "44100", "-b:a", "128k", normalized]),
+        probeSeconds,
         workers: Number(env.HF_WORKERS) || Math.max(1, Math.min(4, cpus().length)),
+        onStep: (s) => { step = s; },
       });
+      v3Chars = got.chars;
+      timeline = got.timeline;
+      stills = got.stills;
       renderer = "hyperframes";
-      stills = hfOut.stills;
+      templateUsed = "v3";
     } catch (err) {
-      if (!ncMap) {
-        step = `hyperframes-${err.step || "render"}`;
-        log(`HyperFrames failed at ${err.step || "?"} (${err.message}); no Remotion fallback for ${script.state} (its map is North Carolina's)`);
-        throw err;
-      }
-      fallback = `${err.step || "hyperframes"}: ${err.message}`.slice(0, 300);
-      log(`HyperFrames failed at ${err.step || "?"} (${err.message}); rendering with Remotion instead`);
+      if (err && err.cap === "elevenlabs") throw err; // no voice left: v2 can't be voiced either
+      templateFallback = `${err.step || "v3"}: ${err.message}`.slice(0, 300);
+      log(`template v3 failed at ${err.step || "?"} (${err.message}); rendering v2 instead`);
+      step = "voice";
     }
-  } else if (wanted !== "remotion") {
-    log(`RENDERER="${wanted}" is not hyperframes or remotion; rendering with Remotion`);
   }
-  if (renderer === "remotion") stills = await renderRemotion(timeline);
+
+  const voiced = [];
+  let chars = 0;
+  if (templateUsed === "v2") {
+    for (let i = 0; i < script.scenes.length; i++) {
+      const scene = script.scenes[i];
+      if (noVoice) {
+        voiced.push({ id: scene.id, audio: null, alignment: estimatedAlignment(scene.voice, scene.voice.length / 15) });
+        continue;
+      }
+      const out = await synthesize({
+        text: scene.voice,
+        previousText: script.scenes[i - 1]?.voice ?? "",
+        nextText: script.scenes[i + 1]?.voice ?? "",
+        apiKey: env.ELEVENLABS_API_KEY,
+        voiceId,
+        modelId,
+        voiceSettings: candidate.settings,
+        pronunciationDictionaryLocators: locators || undefined,
+      });
+      const name = `audio/${String(i).padStart(2, "0")}.mp3`;
+      const file = path.join(ROOT, "public", name);
+      await writeFile(file, out.audio);
+      const normalized = `${file}.norm.mp3`;
+      await run("ffmpeg", ["-y", "-i", file, "-af", LOUDNORM, "-ar", "44100", "-b:a", "128k", normalized]);
+      await rename(normalized, file);
+      voiced.push({ id: scene.id, audio: name, alignment: out.alignment, audioSeconds: await probeSeconds(file) });
+      chars += scene.voice.length;
+    }
+    log(`voice ${noVoice ? "skipped (NO_VOICE)" : `${chars} characters, model ${modelId}, ${LOUDNORM}`}`);
+
+    // 3. render
+    step = "render";
+    timeline = buildTimeline(script, voiced);
+    await writeFile(path.join(OUT, "captions.vtt"), toVtt(timeline.cues));
+    // Renderer (HyperFrames pilot, engine brief Oct 26): the repository
+    // variable RENDERER picks it. Unset or "remotion" renders with Remotion as
+    // before. "hyperframes" tries HyperFrames first; any failure there (setup,
+    // captions, lint, image, render, frames, a timeout) falls back to Remotion
+    // in this same run, with the same voice, so the week still gets a video.
+    const wanted = (env.RENDERER || "remotion").trim().toLowerCase();
+    // The Remotion composition draws only the North Carolina map
+    // (src/nc-counties.json). Any other state (Texas) renders with HyperFrames,
+    // which bakes the script's own state map (hyperframes/geo.mjs), and never
+    // falls back to Remotion: a HyperFrames failure fails the render (the
+    // conductor retries it once and says so in #ops) rather than ship a video
+    // with the wrong state's map.
+    const ncMap = String(script.state || "").trim().toUpperCase() === "NC";
+    if (wanted === "hyperframes" || !ncMap) {
+      try {
+        // Loaded only here: nothing in the HyperFrames path can stop a
+        // Remotion render from starting.
+        const { renderWithHyperframes } = await import("./lib/hyperframes.mjs");
+        const hfOut = await renderWithHyperframes({
+          script, timeline, outDir: OUT, publicDir: path.join(ROOT, "public"), log,
+          workers: Number(env.HF_WORKERS) || Math.max(1, Math.min(4, cpus().length)),
+        });
+        renderer = "hyperframes";
+        stills = hfOut.stills;
+      } catch (err) {
+        if (!ncMap) {
+          step = `hyperframes-${err.step || "render"}`;
+          log(`HyperFrames failed at ${err.step || "?"} (${err.message}); no Remotion fallback for ${script.state} (its map is North Carolina's)`);
+          throw err;
+        }
+        fallback = `${err.step || "hyperframes"}: ${err.message}`.slice(0, 300);
+        log(`HyperFrames failed at ${err.step || "?"} (${err.message}); rendering with Remotion instead`);
+      }
+    } else if (wanted !== "remotion") {
+      log(`RENDERER="${wanted}" is not hyperframes or remotion; rendering with Remotion`);
+    }
+    if (renderer === "remotion") stills = await renderRemotion(timeline);
+  }
   const mp4Bytes = (await stat(path.join(OUT, "video.mp4"))).size;
-  log(`render ${renderer}${fallback ? " (fallback)" : ""}: ${timeline.durationS.toFixed(1)}s video, ${(mp4Bytes / 1e6).toFixed(1)} MB`);
+  log(`render ${renderer}${fallback ? " (fallback)" : ""}${template === "v3" ? `, template ${templateUsed}${templateFallback ? " (fallback)" : ""}` : ""}: ${timeline.durationS.toFixed(1)}s video, ${(mp4Bytes / 1e6).toFixed(1)} MB`);
 
   // 4. upload
   if (env.NO_UPLOAD === "1") {
@@ -282,13 +330,15 @@ async function main() {
   step = "done";
   await reportDone(base, renderId, {
     duration_s: Number(timeline.durationS.toFixed(2)),
-    voice_chars: chars + sampleChars,
+    voice_chars: chars + v3Chars + sampleChars,
     voice_model: modelId,
     voice_name: env.ELEVENLABS_VOICE_ID ? "voice id from the environment" : candidate.name,
     render_seconds: Math.round((Date.now() - t0) / 1000),
     // Logged for the pilot; the conductor keeps only the fields it knows.
     renderer,
     renderer_fallback: fallback || undefined,
+    template: template === "v3" ? templateUsed : undefined,
+    template_fallback: templateFallback || undefined,
   });
   log("done: review links are in #ops");
 }

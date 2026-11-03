@@ -256,18 +256,79 @@ variable.
 Agent skills for HyperFrames are in `.claude/skills` and `.agents/skills`
 (`npx skills add heygen-com/hyperframes`; `skills-lock.json` records them).
 
+## Template v3: the "why" spine and the wheel (fieldstate-site #172)
+
+The engine writes script v3 (`fieldstate.weekly_video.v3`, sie-engine
+`sie/serve/weekly_video_v3.py`; fields in sie-engine `docs/feeds/README.md`,
+"Videos") as the key `v3` on the v2 script. **The script decides which
+template renders** (`lib/v3.mjs` `templateFor`):
+
+- a script whose own `schema` is `fieldstate.weekly_video.v3` renders v3;
+- any other script renders v2 exactly as before, even when it carries a `v3`
+  block. The v2 composition is pinned byte for byte in `test/v3.test.mjs`.
+
+So the engine turns v3 on by writing that schema at the top of the script
+(the v2 `scenes` stay: v3 uses v2's closing scene, and a failed v3 render
+falls back to them). `render.yml` is unchanged. For a local review render of
+a v2 script's `v3` block, set `VIDEO_TEMPLATE=v3`.
+
+v3 renders with HyperFrames only (`lib/render-v3.mjs`). If any v3 step fails
+(nothing to render, voice, generate, lint, image, render), the same run renders
+v2 as before and the `done` call carries `template` / `template_fallback`.
+
+The engine writes every line (`lines: [{cap, voice}]`, already through its
+gate) and every on-screen string (`screen`). The template only places them:
+a scene's voice is its lines read in order, and each line's caption is
+timed to the part of the voice that reads it. The spine, in order:
+
+1. **open**: the number of the week. With `coverage_ok: false` the line must
+   say "on the votes we hold"; if it doesn't, the claim is dropped.
+2. **clip** (`lead.clip`, when present): the town's footage of the motion and
+   the vote with its own sound, the recording's captions verbatim, the
+   credit, the lower third, and the tally slammed in at `result_at_s` with the
+   label "Unconfirmed · from the meeting video". The stretch is cut to
+   `public/clips/lead.mp4` before the project is generated
+   (`lib/clip.mjs`: the town's own download link, ffmpeg reading only that
+   stretch, user agent `CLIP_USER_AGENT` or "FieldstateBot"), so the render
+   stays offline. A failed download skips the beat. `CLIP_FILE` supplies a
+   local file for review renders.
+3. **decided**: case card, roll call, outcome stamp. With no reason on record
+   (`lead.no_reason`), the line sits under the stamp and there is no page.
+4. **matters**: the counter and the dated vote strip, a split vote in red.
+5. **ident + record**: *From the record*, the retypeset page with the
+   highlighter and the push-in.
+6. **next**: the next step or meeting; skipped when `lead.next` is null.
+7. **round**: `round_layout` "one_at_a_time" (≤ 3 items, one card per scene)
+   or "highlight" (one grid; the card being read lit, the rest at 35 %).
+8. **the wheel**: *From the record* (a segment page names its case and how
+   it ended) and *The long road* (the case's steps as a track; a step dated by
+   when the record showed it has an open marker). Any other segment is
+   skipped and logged.
+9. **turn**: *Your turn*, when the engine adds `your_turn`.
+10. **outro**: v2's closing scene.
+
+Each scene fills the frame between the brand bar and the captions and has one
+source line (`screen.src`). The brand bar steps aside for the segment card,
+the page and the footage. The v3 motion kinds (`hl`, `push`, `draw`, `lit`)
+are in `hyperframes/runtime-v3.js`, inlined only into v3 compositions, so
+`runtime.js` and every v2 composition stay as they were.
+
 ## Running it elsewhere
 
 `SCRIPT_FILE=script.json NO_VOICE=1 NO_UPLOAD=1 node render.mjs` renders a
 script without a voice or an upload (`npx remotion browser ensure` first).
-Add `RENDERER=hyperframes` for the HyperFrames path (Docker running). The
+Add `RENDERER=hyperframes` for the HyperFrames path (Docker running), or
+`VIDEO_TEMPLATE=v3` to render a v2 script's `v3` block (`CLIP_FILE=clip.mp4`
+stands in for a clip's download). The
 image builds on first use; `HF_WORKERS` overrides the capture workers
 (default: CPUs, at most 4).
 `ELEVENLABS_API_KEY=… node sample-voices.mjs` writes the three-voice sample
 under `out/voice-samples/`. Behind a TLS-inspecting proxy add
 `REMOTION_EXTRA_FLAGS=--ignore-certificate-errors`. `npm test` runs the
-caption, timeline, voice-candidate and HyperFrames (generator, map, render
-plumbing) tests.
+caption, timeline, voice-candidate, HyperFrames (generator, map, render
+plumbing) and v3 tests; `V3_GOLDEN_NC=<sie-engine
+tests/fixtures/weekly_video_v3/nc-2026-10-24.script.json>` adds the engine's
+real NC golden.
 
 The photo in `public/photos/cumberland.jpg` is the Cumberland County
 Courthouse by Gerry Dincher, licensed CC BY-SA 2.0
