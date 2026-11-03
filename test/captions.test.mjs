@@ -123,3 +123,23 @@ test("orphan cues merge into the cue before them", () => {
   assert.ok(!cuesFromWords(words).some((c) => c.text === "Hold."));
   assert.deepEqual(cuesFromCaption("The board approved it. Yes.", 0, 3).map((c) => c.text), ["The board approved it. Yes."]);
 });
+
+// v3 lines break at a clause, not mid-clause (fieldstate-site #172, Nov 3
+// ask 5): opt-in, so every v2 cue is what it was.
+test("v3 caption lines break after a clause when they run long; v2 is unchanged", () => {
+  const cap = "The last divided vote, on the votes we hold, was in November 2024: 3–2.";
+  assert.deepEqual(cuesFromCaption(cap, 0, 8).map((c) => c.text),
+    ["The last divided vote, on the votes we", "hold, was in November 2024: 3–2."]);
+  assert.deepEqual(cuesFromCaption(cap, 0, 8, { clauses: true }).map((c) => c.text),
+    ["The last divided vote,", "on the votes we hold,", "was in November 2024: 3–2."]);
+  // Never a break that leaves fewer than three words before it, never past 42.
+  const short = cuesFromCaption("On October 19, the Union County Board of Commissioners approved a rezoning.", 0, 8, { clauses: true });
+  assert.equal(short[0].text, "On October 19,");
+  for (const c of short) assert.ok(c.text.length <= 42, c.text);
+  assert.deepEqual(cuesFromCaption("Yes, the board agreed to the full rezoning of the Example Road site.", 0, 8, { clauses: true }).map((c) => c.text),
+    cuesFromCaption("Yes, the board agreed to the full rezoning of the Example Road site.", 0, 8).map((c) => c.text));
+  // The words and their order never change.
+  for (const c of [cap, "Not one no vote in 23 months: the Union County Board of Commissioners, 16 recorded votes in a row, on the votes we hold."]) {
+    assert.equal(cuesFromCaption(c, 0, 9, { clauses: true }).map((x) => x.text).join(" "), c);
+  }
+});

@@ -98,9 +98,13 @@ test("TX shape: open, decided (no page), next, the highlighted round, From the r
 
 test("the engine's real NC golden (sie-engine tests/fixtures/weekly_video_v3), when V3_GOLDEN_NC points at it", { skip: !process.env.V3_GOLDEN_NC }, async () => {
   const script = JSON.parse(await readFile(process.env.V3_GOLDEN_NC, "utf8"));
-  assert.equal(templateFor(script, {}), "v2");
+  // Since Nov 3 the engine writes v3 at the top: the script renders v3. Its
+  // one round item was withdrawn, so there is no round; the Charlotte track
+  // reads Withdrawn once.
+  assert.equal(templateFor(script, {}), "v3");
   const { kinds, html } = render(script);
-  assert.deepEqual(kinds, ["open", "decided", "matters", "ident", "record", "next", "round", "ident", "road", "outro"]);
+  assert.deepEqual(kinds, ["open", "decided", "matters", "ident", "record", "next", "ident", "road", "outro"]);
+  assert.equal((sceneHtml(html, "road").match(/class="v3-station"/g) || []).length, 3);
   assert.doesNotMatch(html, /https?:\/\//);
 });
 
