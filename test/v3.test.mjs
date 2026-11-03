@@ -275,6 +275,43 @@ test("The long road: a station per step, the recorded step open, each lit when i
   for (let i = 1; i < on.length; i++) assert.ok(on[i] > on[i - 1]);
 });
 
+test("Your turn: one card, each row comes in as its own line is read (as What's next)", () => {
+  const t = ncScript();
+  // The engine's shape (sie-engine weekly_video_v3.your_turn): one agenda
+  // card whose rows follow the spoken lines one for one.
+  t.v3.your_turn = {
+    kind: "speak_at_next_meeting",
+    lines: [
+      { cap: "To speak when the Example Town Council meets on Monday, October 26, sign up at the door.",
+        voice: "To speak when the Example Town Council meets on Monday, October twenty-sixth, sign up at the door." },
+      { cap: "Each speaker has 3 minutes.", voice: "Each speaker has three minutes." },
+      { cap: "You can also send written comments.", voice: "You can also send written comments." },
+    ],
+    screen: { kicker: "Your turn", when: ["MON", "Oct 26"], time: "Time not posted", place: "Example Town Council",
+      rows: ["Sign up at the door", "3 minutes each", "Written comments accepted"], src: "Speaking rules as posted" },
+  };
+  const { html, timeline, kinds } = render(t);
+  assert.equal(kinds.at(-2), "turn");
+  const sc = timeline.scenes.find((s) => s.kind === "turn");
+  const h = sceneHtml(html, "turn");
+  const rows = [...h.matchAll(/class="v3-arow" data-a="in" data-at="(\d+)"/g)].map((m) => Number(m[1]));
+  assert.equal(rows.length, 3);
+  assert.deepEqual(rows, sc.lineFrames.map(([f]) => f + 8), "row i comes in with line i");
+  for (let i = 1; i < rows.length; i++) assert.ok(rows[i] > rows[i - 1] + 30, "not all off the first line");
+  // The same rule as What's next's card.
+  const nx = timeline.scenes.find((s) => s.kind === "next");
+  const nrows = [...sceneHtml(html, "next").matchAll(/class="v3-arow" data-a="in" data-at="(\d+)"/g)].map((m) => Number(m[1]));
+  assert.deepEqual(nrows, nx.lineFrames.slice(0, nrows.length).map(([f]) => f + 8));
+  // Several cards (screen.items): each card's rows follow that card's line.
+  const multi = ncScript();
+  multi.v3.your_turn = { ...t.v3.your_turn, screen: { kicker: "Your turn", src: "x",
+    items: [{ when: ["MON", "Oct 26"], place: "A", rows: ["r1", "r2"] }, { when: ["TUE", "Oct 27"], place: "B", rows: ["r3"] }] } };
+  const m = render(multi);
+  const msc = m.timeline.scenes.find((s) => s.kind === "turn");
+  const mrows = [...sceneHtml(m.html, "turn").matchAll(/class="v3-arow" data-a="in" data-at="(\d+)"/g)].map((x) => Number(x[1]));
+  assert.deepEqual(mrows, [msc.lineFrames[0][0] + 8, msc.lineFrames[0][0] + 18, msc.lineFrames[1][0] + 8]);
+});
+
 // ── the clip beat ───────────────────────────────────────────────────────────
 
 test("clip null: no clip scene and no video", () => {

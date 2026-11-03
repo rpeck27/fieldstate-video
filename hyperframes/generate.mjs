@@ -1005,11 +1005,16 @@ function v3Road(ids, s, scene) {
 
 function v3Turn(ids, s, scene) {
   const items = (s.items ?? [s]).slice(0, 3);
+  // One card (what the engine writes): its rows follow its lines one for one,
+  // so each row comes in as its own line is read, as v3Next. Several cards:
+  // each card's rows come in, staggered, as that card's line is read.
+  const one = !Array.isArray(s.items);
+  const rowAt = (j) => (one ? (i) => lineAt(scene, i, 40 + i * 18) + 8 : (i) => lineAt(scene, j, 40) + 8 + i * 10);
   return (
     `<div class="v3-stage">` +
     v3Kicker(ids, s.kicker, 3) +
     `<div style="display:grid;gap:22px">` +
-    items.map((it, j) => v3AgendaCard(ids, it, 12 + j * 10, (i) => lineAt(scene, j, 40) + 8 + i * 10)).join("") +
+    items.map((it, j) => v3AgendaCard(ids, it, 12 + j * 10, rowAt(j))).join("") +
     `</div>` +
     v3Src(ids, s.src, 40) +
     `</div>`
