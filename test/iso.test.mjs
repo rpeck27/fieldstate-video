@@ -221,6 +221,21 @@ test("The long road: the last station shows the lot; the building rises only whe
   const fallback = ncScript();
   delete fallback.v3.wheel.picked[0].data.outcome;
   assert.equal(render(fallback).rs.scenes.find((s) => s.kind === "road").screen.outcome, "withdrawn");
+  // A Dallas-style ordinance title names no kind: the engine's case_kind
+  // draws the building; without it the lot is not drawn, as before.
+  const dallas = ncScript();
+  const seg = dallas.v3.wheel.picked[0];
+  seg.data.outcome = "approved";
+  seg.screen.head = "An ordinance granting a Planned Development District for multifamily uses on property zoned an R-7.5(A) Single Family District";
+  assert.doesNotMatch(sceneHtml(render(dallas).html, "road"), /v3-road-lot/, "no case_kind: no kind in the title, no lot");
+  seg.data.case_kind = "zoning";
+  const withKind = render(dallas);
+  assert.equal(withKind.rs.scenes.find((s) => s.kind === "road").screen.case_kind, "zoning");
+  const dh = sceneHtml(withKind.html, "road");
+  assert.match(dh, /class="abs v3-road-lot"/);
+  assert.match(dh, /-rise-/, "approved: the building rises");
+  seg.data.case_kind = "contract";
+  assert.doesNotMatch(sceneHtml(render(dallas).html, "road"), /v3-road-lot/, "not a site kind: no lot");
 });
 
 test("v3 still renders offline with unique ids; v2 has none of it", async () => {
