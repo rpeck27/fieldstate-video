@@ -322,9 +322,10 @@ never a packed town (a cluster of buildings implies a density the record
 doesn't show). The kernel, parts and kind rules are a copy of the site's town
 tile (fieldstate-site `lib/isoKit.js` and `lib/townTile.js` `classifyCase`,
 branch `claude/town-tile`), restyled for the navy look: light hairlines,
-lighter-navy faces, one lit colour (the gold). The kind comes from the card's
-kicker (its kind label: Rezoning, Zoning, Special use, Variance, Site plan,
-Plat, Plan amendment) and the use from its headline; a contract, budget,
+lighter-navy faces, one lit colour (the gold). The kind is the engine's
+`case_kind` (on round items, and `lead.what.kind` for the lead), else the
+card's kicker (its kind label: Rezoning, Zoning, Special use, Variance, Site
+plan, Plat, Plan amendment); the use comes from its headline; a contract, budget,
 renaming or code-text case gets no building, and neither does an undecided
 outcome. Approved: the building; denied or voted down: an empty dashed lot
 with the requested building as a dashed ghost; withdrawn: the empty lot.

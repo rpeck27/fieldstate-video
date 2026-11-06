@@ -950,10 +950,13 @@ function v3Next(ids, s, scene) {
   );
 }
 
-/** A round card's building: the kind from its kicker, the use from its headline (lib/iso.mjs). */
+/**
+ * A round card's building: the kind from the engine's case_kind (else its
+ * kicker's kind label), the use from its headline (lib/iso.mjs).
+ */
 export function roundFigure(c) {
   const kick = [c.place_short, c.kind_label, c.date_label].filter(Boolean).join(" · ");
-  return caseFigure({ kicker: kick, head: c.text, outcome: c.outcome });
+  return caseFigure({ kicker: kick, head: c.text, outcome: c.outcome, caseKind: c.case_kind });
 }
 
 function roundCard(ids, c, opts) {

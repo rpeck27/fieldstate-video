@@ -128,6 +128,12 @@ test("no building for contracts, budgets, renamings or code text; none for an un
   const figs = tx.v3.round.map((it) => roundFigure({ ...it.screen, outcome: it.outcome }));
   assert.deepEqual(figs.map((f) => f && `${f.use}/${f.state}`), [null, "townhomes/built", null, "industrial/built"]);
   assert.equal(caseFigure({ kicker: "X · Rezoning", head: "amendments to Chapter 51A of the Development Code", outcome: "approved" }), null);
+  // The engine's case_kind on a round item wins over its kind label, both ways.
+  const card = (it, case_kind) => roundFigure({ ...it.screen, outcome: it.outcome, case_kind });
+  const [contract, townhomes] = tx.v3.round;
+  assert.equal(card(townhomes, "contract"), null, "a site label, but the engine says contract");
+  assert.deepEqual(card(contract, null), figs[0], "no case_kind: the kind label decides, as before");
+  assert.equal(card({ ...townhomes, screen: { ...townhomes.screen, kind_label: null } }, "rezoning").use, "townhomes");
   for (const outcome of ["deferred", "continued", "tabled", "", null]) assert.equal(caseFigure({ kicker: "X · Rezoning", head: "retail", outcome }), null, String(outcome));
 });
 
@@ -183,6 +189,10 @@ test("round: one at a time the building rises as the card is read; the grid ligh
   // The highlight grid: a building on the two site cards only, lit with the card.
   const g = sceneHtml(render(txScript()).html, "round");
   assert.equal((g.match(/class="v3-rcard has-iso"/g) || []).length, 2);
+  // The engine's case_kind on a round item reaches the card (lib/v3.mjs).
+  const tx = txScript();
+  tx.v3.round[1] = { ...tx.v3.round[1], case_kind: "contract" };
+  assert.equal((sceneHtml(render(tx).html, "round").match(/class="v3-rcard has-iso"/g) || []).length, 1);
   const lit = [...g.matchAll(/data-a="lit" data-at="\d+" data-first="\d+" data-on="(\d+)" data-off="(-?\d+)"/g)].map((m) => [m[1], m[2]]);
   const glow = [...g.matchAll(/data-a="glow" data-at="\d+" data-on="(\d+)" data-off="(-?\d+)"/g)].map((m) => [m[1], m[2]]);
   assert.deepEqual(glow, [lit[1], lit[3]], "each figure lights and dims with its own card");
@@ -234,8 +244,11 @@ test("the engine's real NC golden, when V3_GOLDEN_NC points at it: an industrial
   assert.ok(d.includes(ILLUSTRATION));
   assert.match(d, /class="d"/);
   assert.doesNotMatch(d, /ghost|class="d dash"/);
+  // The engine holds a withdrawn round item, so this week has no round: the
+  // round is checked only when there is one.
   for (const kind of ["round", "road"]) {
     const h = sceneHtml(html, kind);
+    if (kind === "round" && !h) continue;
     assert.match(h, /class="d dash"/, `${kind}: the empty lot`);
     assert.doesNotMatch(h, /-rise-/, `${kind}: nothing rises on a withdrawn case`);
   }
