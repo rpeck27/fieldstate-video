@@ -13,6 +13,8 @@
 //         and lifted, the others dimmed (data-first, data-on, data-off,
 //         data-lift px, default 12); also the long road's stations, dim
 //         until their own line is read
+//   glow  an isometric figure's lit layer (lib/iso.mjs): fades in at
+//         data-on, out at data-off (-1: stays), over the lit step
 (function () {
   "use strict";
   var DATA = JSON.parse(document.getElementById("fs-data").textContent);
@@ -70,6 +72,11 @@
           tl.fromTo(el, { opacity: 1, y: 0 }, { opacity: 1, y: lift, duration: step, ease: "none" }, on);
         }
         if (off >= 0) tl.to(el, { opacity: DIM, y: 0, duration: step, ease: "none" }, s0 + off / FPS);
+      } else if (kind === "glow") {
+        var gStep = 8 / FPS;
+        var gOff = num(el, "data-off", -1);
+        tl.fromTo(el, { opacity: 0 }, { opacity: 1, duration: gStep, ease: "none" }, s0 + num(el, "data-on", 0) / FPS);
+        if (gOff >= 0) tl.to(el, { opacity: 0, duration: gStep, ease: "none" }, s0 + gOff / FPS);
       }
     }
   }
