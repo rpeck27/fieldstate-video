@@ -289,9 +289,13 @@ timed to the part of the voice that reads it. The spine, in order:
    label "Unconfirmed · from the meeting video". The stretch is cut to
    `public/clips/lead.mp4` before the project is generated
    (`lib/clip.mjs`, ffmpeg reading only that stretch), so the render stays
-   offline. The render job reads the clip only from our own storage: the
-   engine's `lead.clip.hosted_url` on `data.fieldstate.org`
-   (`CLIP_HOSTS`). Town and vendor sites are fetched only by the engine, so
+   offline. The render job reads the clip only from our own storage, the
+   engine's `lead.clip.hosted_url`: the conductor's `/video/render/clip`
+   route on `CONDUCTOR_URL`, fetched with this run's OIDC token like the
+   script (the stretch the engine cut as FieldstateBot and keeps in the
+   private bucket until the week's video is approved; `hosted_cut: true`, so
+   it is read from 0; engine switch `SIE_WEEKLY_VIDEO_CLIP`), or
+   `data.fieldstate.org` (`CLIP_HOSTS`). Town and vendor sites are fetched only by the engine, so
    `src` and `download_url` (the town's page and its own Download link) are
    provenance and never fetched here. No `hosted_url`, any other host, or a
    failed cut skips the beat with the reason logged. `CLIP_FILE` supplies a
