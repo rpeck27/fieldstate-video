@@ -20,6 +20,7 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { caseFigure, figureView, isoSvg } from "../lib/iso.mjs";
 import { countyFor, stateMap } from "./geo.mjs";
 import { PHOTOS, photoFor } from "./photos.mjs";
 
@@ -732,6 +733,36 @@ function stampTone(outcome) {
   return [C.body, "#f6f9fc"];
 }
 
+// ── isometric figures (lib/iso.mjs): one drawing per case, never a town ──
+
+/** Under the lead's figure: a drawing of the kind of use, never a claim of construction. */
+export const ILLUSTRATION = "Illustration of the use, not a site plan";
+
+/** A figure's height in px at `w` px wide (every figure is drawn at one scale). */
+function isoHeight(fig, w) {
+  const v = figureView(fig);
+  return Math.round((w * v.h) / v.w);
+}
+
+/**
+ * One case's figure, `w` px wide: the lot in ink, its lit layer fading in
+ * at `on` (and out at `off`, -1: stays), and the building: standing from
+ * the start (lit with the lot) or, with `riseAt`, rising in lit.
+ */
+function isoFigure(ids, fig, { w, on, off = -1, riseAt = null }) {
+  if (!fig) return "";
+  const h = isoHeight(fig, w);
+  const rise = riseAt != null;
+  const bldLit = isoSvg(fig, "bld", { lit: true });
+  return (
+    `<div class="v3-iso" style="width:${w}px;height:${h}px">` +
+    `<div class="v3-iso-layer">${isoSvg(fig, "lot")}${rise ? "" : isoSvg(fig, "bld")}</div>` +
+    `<div id="${ids.next("glow")}" class="v3-iso-layer" style="opacity:0" data-a="glow" data-at="${on}" data-on="${on}" data-off="${off}">${isoSvg(fig, "lot", { lit: true })}${rise ? "" : bldLit}</div>` +
+    (rise && bldLit ? `<div id="${ids.next("rise")}" class="v3-iso-layer" ${a("in", riseAt, { y: Math.max(12, Math.round(h * 0.14)), d: 20 })}>${bldLit}</div>` : "") +
+    `</div>`
+  );
+}
+
 function v3Open(ids, s) {
   const hook = String(s.hook ?? "");
   const size = hook.length > 90 ? 76 : hook.length > 60 ? 88 : 104;
@@ -752,6 +783,20 @@ function v3Decided(ids, s, scene, ctx) {
   const stampAt = lineAt(scene, 1, seatsAt + seats.length * 8 + 12);
   const noteAt = lineAt(scene, (scene.lines?.length ?? 1) - 1, stampAt + 30);
   const stampW = String(s.stamp ?? "").length * 28 + 90;
+  // The lead's building, top right under the stamp, rising before the stamp lands.
+  const fig = caseFigure({ kicker: s.card_kicker, head: s.head, outcome: s.outcome, caseKind: s.case_kind });
+  const FIG_W = 300;
+  // The figure's column: the plate and a gap. The kicker and headline keep
+  // clear of a wider stamp as before; the seats and the note clear the plate.
+  const col = fig ? FIG_W + 2 * 26 + 40 : 0;
+  const figTop = s.stamp ? 136 : 54;
+  const riseAt = Math.max(14, stampAt - 30);
+  const plate = fig
+    ? `<div class="v3-iso-plate lead" style="right:60px;top:${figTop}px;width:${FIG_W + 52}px">` +
+      isoFigure(ids, fig, { w: FIG_W, on: riseAt, riseAt }) +
+      `<div id="${ids.next("illus")}" class="v3-iso-note" ${a("in", riseAt + 10)}>${esc(ILLUSTRATION)}</div></div>`
+    : "";
+  const minH = fig ? figTop + isoHeight(fig, FIG_W) + 2 * 22 + 52 + 56 : 0;
   const chips = seats
     .map((m, i) => {
       const v = String(m.vote ?? "").toLowerCase();
@@ -764,15 +809,16 @@ function v3Decided(ids, s, scene, ctx) {
   return (
     `<div class="v3-stage">` +
     v3Kicker(ids, s.kicker, 3) +
-    `<div id="${ids.next("card")}" class="v3-card" ${a("pop", 10, { y: 40 })}>` +
-    `<div class="v3-card-kicker" style="padding-right:${stampW}px">${esc(s.card_kicker ?? "")}</div>` +
-    `<div class="v3-card-head" style="font-size:${headSize}px;max-width:${s.stamp ? 1512 - stampW : 1512}px">${esc(s.head ?? "")}</div>` +
+    `<div id="${ids.next("card")}" class="v3-card" ${fig ? `style="padding-right:${64 + col}px;min-height:${minH}px" ` : ""}${a("pop", 10, { y: 40 })}>` +
+    `<div class="v3-card-kicker" style="padding-right:${fig ? Math.max(0, (s.stamp ? stampW : 0) - col) : stampW}px">${esc(s.card_kicker ?? "")}</div>` +
+    `<div class="v3-card-head" style="font-size:${headSize}px;max-width:${fig ? 1512 - Math.max(col, s.stamp ? stampW : 0) : s.stamp ? 1512 - stampW : 1512}px">${esc(s.head ?? "")}</div>` +
     // One source line per scene (fix 5): the card's sub-line is left off
     // when the scene's source line already says it.
     (s.sub && !String(s.src ?? "").includes(s.sub) ? `<div class="v3-card-sub">${esc(s.sub)}</div>` : "") +
     (chips ? `<div class="v3-seats">${chips}</div>` : "") +
     (s.stamp ? `<div id="${ids.next("stamp")}" class="v3-stamp" style="color:${tone};background:${soft};border-color:${tone}" ${a("stamp", stampAt)}>${esc(s.stamp)}</div>` : "") +
     (s.note ? `<div id="${ids.next("note")}" class="v3-note" ${a("in", noteAt, { y: 12 })}>${esc(s.note)}</div>` : "") +
+    plate +
     `</div>` +
     v3Src(ids, s.src, 40) +
     `</div>`
@@ -904,18 +950,40 @@ function v3Next(ids, s, scene) {
   );
 }
 
+/**
+ * A round card's building: the kind from the engine's case_kind (else its
+ * kicker's kind label), the use from its headline (lib/iso.mjs).
+ */
+export function roundFigure(c) {
+  const kick = [c.place_short, c.kind_label, c.date_label].filter(Boolean).join(" · ");
+  return caseFigure({ kicker: kick, head: c.text, outcome: c.outcome, caseKind: c.case_kind });
+}
+
 function roundCard(ids, c, opts) {
   const [tone, soft] = stampTone(c.outcome);
   const kick = [c.place_short, c.kind_label, c.date_label].filter(Boolean).join(" · ");
   const stamp = c.outcome_label ? String(c.outcome_label).toUpperCase() : "";
-  return (
-    `<div class="v3-rcard${opts.big ? " big" : ""}">` +
+  // A small building beside the headline; none for contracts, budgets, renamings.
+  const fig = roundFigure(c);
+  // The figure takes width from the headline: a long one steps down a size rather than lose its last line.
+  const len = String(c.text ?? "").length;
+  // The smallest size takes a fourth line: about the height three lines took at the full size.
+  const steps = opts.big ? [[60, 72, 3], [95, 64, 4]] : [[44, 40, 3], [75, 36, 4]];
+  const [, size, clamp] = (fig && steps.filter(([n]) => len > n).at(-1)) || [];
+  const body =
     `<div class="v3-card-kicker">${esc(kick)}</div>` +
-    `<div class="v3-rhead">${esc(c.text ?? "")}</div>` +
+    `<div class="v3-rhead"${size ? ` style="font-size:${size}px${clamp > 3 ? `;-webkit-line-clamp:${clamp}` : ""}"` : ""}>${esc(c.text ?? "")}</div>` +
     `<div class="v3-rfoot">` +
     (stamp ? `<span id="${ids.next("rstamp")}" class="v3-rstamp" style="color:${tone};background:${soft};border-color:${tone}" ${a("stamp", opts.stampAt)}>${esc(stamp)}</span>` : "") +
     (c.chip ? `<span id="${ids.next("chip")}" class="v3-why" ${a("in", opts.stampAt + 10, { x: -12 })}>${esc(c.chip)}</span>` : "") +
-    `</div></div>`
+    `</div>`;
+  if (!fig) return `<div class="v3-rcard${opts.big ? " big" : ""}">${body}</div>`;
+  const w = opts.big ? 250 : 150;
+  return (
+    `<div class="v3-rcard has-iso${opts.big ? " big" : ""}">` +
+    `<div class="v3-rbody">${body}</div>` +
+    `<div class="v3-iso-plate in-card">${isoFigure(ids, fig, { w, ...opts.iso })}</div>` +
+    `</div>`
   );
 }
 
@@ -928,7 +996,7 @@ function v3Round(ids, s, scene) {
     return (
       `<div class="v3-stage">` +
       `<div style="display:flex;align-items:center;justify-content:space-between">${v3Kicker(ids, s.kicker, 3)}<div class="v3-dots">${dots}</div></div>` +
-      `<div id="${ids.next("rc")}" style="margin-top:30px" ${a("pop", 10, { y: 40 })}>${roundCard(ids, cards[0] ?? {}, { big: true, stampAt: at + 24 })}</div>` +
+      `<div id="${ids.next("rc")}" style="margin-top:30px" ${a("pop", 10, { y: 40 })}>${roundCard(ids, cards[0] ?? {}, { big: true, stampAt: at + 24, iso: { on: at, riseAt: at + 4 } })}</div>` +
       v3Src(ids, s.src, 30) +
       `</div>`
     );
@@ -942,7 +1010,7 @@ function v3Round(ids, s, scene) {
       return (
         `<div id="${ids.next("rpop")}" ${a("pop", 8 + i * 5, { y: 30 })}>` +
         `<div id="${ids.next("lit")}" data-a="lit" data-at="${first}" data-first="${first}" data-on="${on}" data-off="${off}">` +
-        roundCard(ids, c, { big: false, stampAt: on + 20 }) +
+        roundCard(ids, c, { big: false, stampAt: on + 20, iso: { on, off } }) +
         `</div></div>`
       );
     })
@@ -950,7 +1018,7 @@ function v3Round(ids, s, scene) {
   return (
     `<div class="v3-stage">` +
     v3Kicker(ids, s.kicker, 3) +
-    `<div class="v3-rgrid" style="grid-template-columns:repeat(${cols},1fr)">${grid}</div>` +
+    `<div class="v3-rgrid" style="grid-template-columns:repeat(${cols},minmax(0,1fr))">${grid}</div>` +
     v3Src(ids, s.src, 30) +
     `</div>`
   );
@@ -967,6 +1035,7 @@ function v3Road(ids, s, scene) {
   const alternate = n > 4;
   const labW = Math.min(380, alternate ? gap * 2 - 24 : gap - 24);
   const startAt = scene.audioFrom + 20;
+  const lightAt = [];
   const stations = steps
     .map((st, i) => {
       const x = X0 + i * gap;
@@ -980,6 +1049,7 @@ function v3Road(ids, s, scene) {
       // Every station shows (dim) as the track draws; each lights when its
       // own line is read.
       const shown = startAt + Math.round((drawD * i) / Math.max(1, n - 1));
+      lightAt.push([shown, Math.max(at, shown + 10), above]);
       return (
         `<div id="${ids.next("st")}" class="v3-station" style="left:${x.toFixed(1)}px;top:${TRACK}px" ${a("pop", shown, { y: above ? -20 : 20, damp: 12 })}>` +
         `<div id="${ids.next("stlit")}" data-a="lit" data-at="${shown}" data-first="${shown}" data-on="${Math.max(at, shown + 10)}" data-off="-1" data-lift="0">` +
@@ -999,7 +1069,33 @@ function v3Road(ids, s, scene) {
     (s.span ? `<span class="v3-road-dates">${esc(s.span)}</span>` : "") +
     `</div></div>` +
     `<div id="${ids.next("track")}" class="v3-track" style="left:${X0}px;width:${X1 - X0}px;top:${TRACK - 2}px" ${a("draw", startAt - 6, { d: drawD + 6 })}></div>` +
-    stations
+    stations +
+    roadLot(ids, s, lightAt.at(-1), X1, TRACK)
+  );
+}
+
+/**
+ * The case's lot at the track's last station: it shows with the station,
+ * lights when the last line is read, and the building rises on it only when
+ * the case was approved (denied or withdrawn: the empty lot). Above the
+ * station, or below it when the station's label sits above.
+ */
+function roadLot(ids, s, last, x, track) {
+  if (!last) return "";
+  const fig = caseFigure({ head: s.head, outcome: s.outcome, caseKind: s.case_kind, ghost: false });
+  if (!fig) return "";
+  const [shown, on, labelAbove] = last;
+  const W = 230;
+  const h = isoHeight(fig, W);
+  const built = fig.state === "built";
+  const pos = labelAbove ? `left:${x - W / 2 + 20}px;top:${track + 34}px` : `left:${x - W / 2}px;top:${track - 34 - h}px`;
+  return (
+    `<div id="${ids.next("rlot")}" class="abs v3-road-lot" style="${pos};width:${W}px" ${a("pop", shown, { y: labelAbove ? 20 : -20, damp: 12 })}>` +
+    (built ? `<div id="${ids.next("illus")}" class="v3-iso-note road${labelAbove ? " under" : ""}" ${a("in", on + 14)}>${esc(ILLUSTRATION)}</div>` : "") +
+    // Dim with its station until the last line is read, as the stations are.
+    `<div id="${ids.next("rlotlit")}" data-a="lit" data-at="${shown}" data-first="${shown}" data-on="${on}" data-off="-1" data-lift="0">` +
+    isoFigure(ids, fig, { w: W, on, riseAt: built ? on + 4 : null }) +
+    `</div></div>`
   );
 }
 
@@ -1178,6 +1274,37 @@ const CSS_V3 = `
 .v3-slam{font-family:"Newsreader";font-weight:600;font-size:280px;line-height:.9;color:${C.live};letter-spacing:-.03em;text-shadow:0 10px 50px rgba(0,0,0,.5)}
 .v3-clip-label{font-family:"Geist";font-weight:600;font-size:26px;color:${C.reported};background:${C.reportedSoft};border:1px solid #ddd4ff;border-radius:999px;padding:9px 22px}
 .v3-brand{position:absolute;left:110px;top:44px;display:flex;align-items:center;gap:18px;z-index:5}
+.v3-iso{position:relative;flex:none}
+.v3-iso-layer{position:absolute;inset:0}
+.v3-iso-svg{position:absolute;left:0;top:0;width:100%;height:100%;overflow:visible}
+.v3-iso-svg .f,.v3-iso-svg .d,.v3-iso-svg .lot,.v3-iso-svg .road{vector-effect:non-scaling-stroke;stroke-width:1.5px;stroke-linejoin:round;stroke-linecap:round}
+.v3-iso-svg .f{stroke:rgba(236,242,250,.86)}
+.v3-iso-svg .ft,.v3-iso-svg .fa{fill:#2a5683}
+.v3-iso-svg .fl,.v3-iso-svg .roof.rb{fill:#163a60}
+.v3-iso-svg .fr{fill:#1e4870}
+.v3-iso-svg .roof.rf{fill:#336496}
+.v3-iso-svg .flag{fill:rgba(236,242,250,.86)}
+.v3-iso-svg .d{fill:none;stroke:rgba(236,242,250,.42)}
+.v3-iso-svg .d.pole,.v3-iso-svg .d.stake{stroke:rgba(236,242,250,.86)}
+.v3-iso-svg .d.dash{stroke:rgba(236,242,250,.86);stroke-dasharray:6 5}
+.v3-iso-svg .lot{fill:#123457;stroke:rgba(236,242,250,.3)}
+.v3-iso-svg .road{fill:${C.navy};stroke:none}
+.v3-iso-svg .road-mark{stroke:rgba(236,242,250,.6)}
+.v3-iso-svg.ghost .f{fill:rgba(10,37,64,.55);stroke-dasharray:6 5}
+.v3-iso-svg.ghost .d{display:none}
+.v3-iso-svg.lit .f,.v3-iso-svg.lit .d.pole,.v3-iso-svg.lit .d.stake,.v3-iso-svg.lit .d.dash,.v3-iso-svg.lit .lot{stroke:${C.live}}
+.v3-iso-svg.lit .d{stroke:rgba(240,166,43,.72)}
+.v3-iso-svg.lit .flag{fill:${C.live}}
+.v3-iso-plate{background:${C.navy};border-radius:18px;display:flex;flex-direction:column;align-items:center;padding:22px 26px;flex:none}
+.v3-iso-plate.lead{position:absolute}
+.v3-iso-plate.in-card{padding:14px 18px;border-radius:14px}
+.v3-rcard.big .v3-iso-plate.in-card{padding:22px 26px;border-radius:18px}
+.v3-iso-note{font-family:"Geist";font-size:17px;line-height:1.35;color:${C.dim};margin-top:14px;text-align:center}
+.v3-iso-note.road{position:absolute;left:-60px;right:-60px;bottom:100%;margin:0 0 4px}
+.v3-iso-note.road.under{bottom:auto;top:100%;margin:4px 0 0}
+.v3-rcard.has-iso{flex-direction:row;align-items:center;gap:28px}
+.v3-rcard.big.has-iso{gap:52px}
+.v3-rbody{flex:1;min-width:0;align-self:stretch;display:flex;flex-direction:column}
 `;
 
 export { PHOTOS };
