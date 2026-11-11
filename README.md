@@ -286,7 +286,7 @@ timed to the part of the voice that reads it. The spine, in order:
 2. **clip** (`lead.clip`, when present): the town's footage of the motion and
    the vote with its own sound, the recording's captions verbatim, the
    credit, the lower third, and the tally slammed in at `result_at_s` with the
-   label "Unconfirmed · from the meeting video". The stretch is cut to
+   label "From the meeting video". The stretch is cut to
    `public/clips/lead.mp4` before the project is generated
    (`lib/clip.mjs`, ffmpeg reading only that stretch), so the render stays
    offline. The render job reads the clip only from our own storage, the

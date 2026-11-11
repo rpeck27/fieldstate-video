@@ -414,7 +414,7 @@ test("clip present: the footage, verbatim captions, credit, label and the tally 
   assert.match(video, /data-media-start="0"/);
   const h = sceneHtml(html, "clip");
   assert.match(h, />Video: City of Example</);
-  assert.match(h, />Unconfirmed · from the meeting video</);
+  assert.match(h, />From the meeting video</);
   assert.match(h, />Example · Planning and Zoning Commission</);
   const slam = h.match(/class="v3-slam" data-a="pop" data-at="(\d+)"/);
   assert.ok(slam && Number(slam[1]) === 15 * 30 + 2, "the tally lands on the chair's result");

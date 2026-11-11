@@ -287,8 +287,8 @@ export function syntheticClip() {
       { start: 13.2, end: 15.4, text: "Motion passes 5-1." },
     ],
     credit: "Video: City of Example", tally: "5–1", outcome: "approved", spoken_result: "passes 5-1",
-    status: "first_read", label: "Unconfirmed · from the meeting video", lines: [],
-    screen: { lower_third: "Example · Planning and Zoning Commission", stamp: "5–1", label: "Unconfirmed · from the meeting video", credit: "Video: City of Example" },
+    status: "first_read", label: "From the meeting video", lines: [],
+    screen: { lower_third: "Example · Planning and Zoning Commission", stamp: "5–1", label: "From the meeting video", credit: "Video: City of Example" },
   };
 }
 
